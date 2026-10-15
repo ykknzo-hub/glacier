@@ -1,0 +1,44 @@
+{
+  "prefix": ".",
+  "urls": {
+    "antivc": "https://egsjibegsbjigesongserbnoigssge.pages.dev/glaciervc.lua",
+    "reanimation": "https://egsjibegsbjigesongserbnoigssge.pages.dev/reanim.lua",
+    "infiniteYield": "https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source",
+    "tagScript": "https://egsjibegsbjigesongserbnoigssge.pages.dev/glaciertags.lua",
+    "vip-emotes": "https://egsjibegsbjigesongserbnoigssge.pages.dev/vipemotes.lua",
+    "trip": "https://egsjibegsbjigesongserbnoigssge.pages.dev/trip.lua",
+    "sfly": "https://egsjibegsbjigesongserbnoigssge.pages.dev/sfly.lua",
+    "reverse": "https://egsjibegsbjigesongserbnoigssge.pages.dev/reverse.lua",
+    "ugc-emotes": "https://egsjibegsbjigesongserbnoigssge.pages.dev/ugcemotes.lua",
+    "touch-fling": "https://egsjibegsbjigesongserbnoigssge.pages.dev/touchfling.lua"
+  },
+  "commands": [
+    { "name": "antivc", "kind": "url", "category": "Buttons", "urlKey": "antivc" },
+    { "name": "reanimation", "kind": "url", "category": "Buttons", "urlKey": "reanimation" },
+    { "name": "vip-emotes", "kind": "url", "category": "Buttons", "urlKey": "vip-emotes" },
+    { "name": "trip", "kind": "url", "category": "Buttons", "urlKey": "trip" },
+    { "name": "sfly", "kind": "url", "category": "Buttons", "urlKey": "sfly" },
+    { "name": "ugc-emotes", "kind": "url", "category": "Buttons", "urlKey": "ugc-emotes" },
+    { "name": "rejoin", "kind": "builtin", "category": "Buttons" },
+    { "name": "tpreset", "kind": "builtin", "category": "Buttons" },
+    { "name": "reset", "kind": "builtin", "category": "Buttons" },
+    { "name": "headsit", "kind": "builtin", "category": "Boxes" },
+    { "name": "speed", "kind": "builtin", "category": "Boxes" },
+    { "name": "jump", "kind": "builtin", "category": "Boxes" },
+    { "name": "goto", "kind": "builtin", "category": "Boxes" },
+    { "name": "fov", "kind": "builtin", "category": "Boxes" },
+    { "name": "clicktp", "kind": "builtin", "category": "Boxes" },
+    { "name": "ftp", "kind": "builtin", "category": "Toggles" },
+    { "name": "noclip", "kind": "builtin", "category": "Toggles" },
+    { "name": "infjump", "kind": "builtin", "category": "Toggles" },
+    { "name": "infzoom", "kind": "builtin", "category": "Toggles" },
+    { "name": "fullbright", "kind": "builtin", "category": "Toggles" }
+  ],
+  "externals": [
+    { "name": "Infinite Yield", "urlKey": "infiniteYield" },
+    { "name": "sl8", "url": "https://sl8ght.xyz/" },
+    { "name": "Novoline", "url": "https://novoline.pro/" },
+    { "name": "AK ADMIN", "url": "https://absent.wtf/AKADMIN.lua" },
+    { "name": "NEMESIS", "url": "https://usenms.xyz/loader.lua" }
+  ]
+}
