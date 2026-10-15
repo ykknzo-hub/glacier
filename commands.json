@@ -1,16 +1,16 @@
 {
   "prefix": ".",
   "urls": {
-    "antivc": "https://egsjibegsbjigesongserbnoigssge.pages.dev/glaciervc.lua",
-    "reanimation": "https://egsjibegsbjigesongserbnoigssge.pages.dev/reanim.lua",
+    "antivc": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciervc.lua",
+    "reanimation": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/reanim.lua",
     "infiniteYield": "https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source",
-    "tagScript": "https://egsjibegsbjigesongserbnoigssge.pages.dev/glaciertags.lua",
-    "vip-emotes": "https://egsjibegsbjigesongserbnoigssge.pages.dev/vipemotes.lua",
-    "trip": "https://egsjibegsbjigesongserbnoigssge.pages.dev/trip.lua",
-    "sfly": "https://egsjibegsbjigesongserbnoigssge.pages.dev/sfly.lua",
-    "reverse": "https://egsjibegsbjigesongserbnoigssge.pages.dev/reverse.lua",
-    "ugc-emotes": "https://egsjibegsbjigesongserbnoigssge.pages.dev/ugcemotes.lua",
-    "touch-fling": "https://egsjibegsbjigesongserbnoigssge.pages.dev/touchfling.lua"
+    "tagScript": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciertags.lua",
+    "vip-emotes": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/vipemotes.lua",
+    "trip": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/trip.lua",
+    "sfly": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/sfly.lua",
+    "reverse": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/reverse.lua",
+    "ugc-emotes": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/ugcemotes.lua",
+    "touch-fling": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/touchfling.lua"
   },
   "commands": [
     { "name": "antivc", "kind": "url", "category": "Buttons", "urlKey": "antivc" },
