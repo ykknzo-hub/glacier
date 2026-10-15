@@ -688,7 +688,7 @@ emoteTabBar.BackgroundTransparency = 1
 emoteTabBar.ZIndex = 3
 emoteTabBar.Parent = body
 
-local emoteTabNames = { "All", "Favs", "Binds", "Custom", "Speed", "Limb", "State" }
+local emoteTabNames = { "All", "Favs", "Binds", "Custom", "Speed", "Limb", "State", "AnimCopy" }
 local emoteMode = "All"
 local emoteTabButtons = {}
 
@@ -1402,7 +1402,6 @@ st.panel, st.refreshLists = (function()
 			chevron.Rotation = value and 90 or 0
 			chevron.TextColor3 = value and WHITE or MUTED
 			if value then
-
 				for _, other in ipairs(sections) do
 					if other ~= sec and other.expanded then
 						other.setExpanded(false)
@@ -1606,6 +1605,463 @@ st.panel, st.refreshLists = (function()
 	end))
 
 	return panel, refresh
+end)()
+
+st.copyPanel, st.copyStop = (function()
+	local RS_NAME = "animcopy_mirror"
+
+	local panel = Instance.new("ScrollingFrame")
+	panel.Name = "AnimCopyPanel"
+	panel.Position = UDim2.new(0, 12, 0, LIST_Y + 6)
+	panel.Size = UDim2.new(1, -24, 1, -(LIST_Y + 12))
+	panel.BackgroundTransparency = 1
+	panel.BorderSizePixel = 0
+	panel.ScrollBarThickness = 3
+	panel.ScrollBarImageColor3 = WHITE
+	panel.ScrollBarImageTransparency = 0.65
+	panel.ScrollingDirection = Enum.ScrollingDirection.Y
+	panel.CanvasSize = UDim2.new(0, 0, 0, 280)
+	panel.Visible = false
+	panel.ZIndex = 3
+	panel.Parent = body
+
+	local target = nil
+	local copying = false
+	local side = "Front"
+	local lock = true
+	local dist = 4
+	local runConns = {}
+	local cachedT, cachedC
+	local jointPairs = {}
+	local warnedRig = false
+    local modeSetting = "Auto" 
+    local partMode = false
+    local myMotors = {}
+    local tparts = {}
+    local modeCheck = 0
+
+	local targetBtn = makeGlassButton(panel, "Select player...", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 0))
+	local copyBtn = makeGlassButton(panel, "Copy", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 34))
+
+	local posLabel = Instance.new("TextLabel")
+	posLabel.Size = UDim2.new(1, 0, 0, 16)
+	posLabel.Position = UDim2.new(0, 0, 0, 68)
+	posLabel.BackgroundTransparency = 1
+	posLabel.Text = "Position"
+	posLabel.TextColor3 = MUTED
+	posLabel.Font = Enum.Font.GothamMedium
+	posLabel.TextSize = 11
+	posLabel.TextXAlignment = Enum.TextXAlignment.Left
+	posLabel.ZIndex = 3
+	posLabel.Parent = panel
+
+	local sideNames = { "Front", "Behind", "Left", "Right" }
+	local sideButtons = {}
+	for i, name in ipairs(sideNames) do
+		sideButtons[name] = makeGlassButton(
+			panel, name,
+			UDim2.new(0.25, -4, 0, 24),
+			UDim2.new((i - 1) * 0.25, 2, 0, 86)
+		)
+	end
+
+	local lockBtn = makeGlassButton(panel, "Stay beside: On", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 118))
+
+	local distLabel = Instance.new("TextLabel")
+	distLabel.Size = UDim2.new(0.5, 0, 0, 24)
+	distLabel.Position = UDim2.new(0, 0, 0, 152)
+	distLabel.BackgroundTransparency = 1
+	distLabel.Text = "Distance: 4"
+	distLabel.TextColor3 = WHITE
+	distLabel.Font = Enum.Font.GothamMedium
+	distLabel.TextSize = 12
+	distLabel.TextXAlignment = Enum.TextXAlignment.Left
+	distLabel.ZIndex = 3
+	distLabel.Parent = panel
+
+	local minusBtn = makeGlassButton(panel, "-", UDim2.new(0.25, -4, 0, 24), UDim2.new(0.5, 2, 0, 152))
+	local plusBtn = makeGlassButton(panel, "+", UDim2.new(0.25, -4, 0, 24), UDim2.new(0.75, 2, 0, 152))
+
+	local infoLabel = Instance.new("TextLabel")
+	infoLabel.Size = UDim2.new(1, 0, 0, 40)
+	infoLabel.Position = UDim2.new(0, 0, 0, 218)
+	infoLabel.BackgroundTransparency = 1
+	infoLabel.Text = "Pick a player, then press Copy. Enable reanimation first."
+	infoLabel.TextColor3 = MUTED
+	infoLabel.Font = Enum.Font.Gotham
+	infoLabel.TextSize = 11
+	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+	infoLabel.TextYAlignment = Enum.TextYAlignment.Top
+	infoLabel.TextWrapped = true
+	infoLabel.ZIndex = 3
+	infoLabel.Parent = panel
+
+    local modeBtn = makeGlassButton(panel, "Mode: Auto", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 186))
+
+	local function info(text, color)
+		infoLabel.Text = text
+		infoLabel.TextColor3 = color or MUTED
+	end
+
+	local dd = Instance.new("Frame")
+	dd.Size = UDim2.new(1, 0, 0, 160)
+	dd.Position = UDim2.new(0, 0, 0, 30)
+	dd.BackgroundColor3 = Color3.fromRGB(14, 14, 14)
+	dd.BorderSizePixel = 0
+	dd.Visible = false
+	dd.ZIndex = 8
+	dd.Parent = panel
+	makeCorner(dd, 6)
+
+	local ddSearch = Instance.new("TextBox")
+	ddSearch.Size = UDim2.new(1, -8, 0, 24)
+	ddSearch.Position = UDim2.new(0, 4, 0, 4)
+	ddSearch.BackgroundColor3 = BOX_COLOR
+	ddSearch.BorderSizePixel = 0
+	ddSearch.Text = ""
+	ddSearch.PlaceholderText = "Search players..."
+	ddSearch.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+	ddSearch.TextColor3 = WHITE
+	ddSearch.Font = Enum.Font.Gotham
+	ddSearch.TextSize = 12
+	ddSearch.ClearTextOnFocus = false
+	ddSearch.ZIndex = 9
+	ddSearch.Parent = dd
+	makeCorner(ddSearch, 6)
+
+	local ddList = Instance.new("ScrollingFrame")
+	ddList.Size = UDim2.new(1, -8, 1, -36)
+	ddList.Position = UDim2.new(0, 4, 0, 32)
+	ddList.BackgroundTransparency = 1
+	ddList.BorderSizePixel = 0
+	ddList.ScrollBarThickness = 3
+	ddList.ScrollBarImageColor3 = WHITE
+	ddList.ScrollBarImageTransparency = 0.65
+	ddList.ScrollingDirection = Enum.ScrollingDirection.Y
+	ddList.CanvasSize = UDim2.new(0, 0, 0, 0)
+	ddList.ZIndex = 9
+	ddList.Parent = dd
+
+	local rows = {}
+
+	local function restoreMotors()
+	for _, m in ipairs(myMotors) do
+		pcall(function()
+			if m[1].Parent then m[1].C0 = m[2] end
+		end)
+	end
+end
+
+local function jointsAlive(tchar)
+	local n = 0
+	for _, d in ipairs(tchar:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Enabled and d.Part0 and d.Part1
+			and d.Part0:IsDescendantOf(tchar) and d.Part1:IsDescendantOf(tchar) then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+local function rebuild(tchar, char)
+	restoreMotors()
+	cachedT, cachedC = tchar, char
+	table.clear(jointPairs)
+	table.clear(myMotors)
+	table.clear(tparts)
+	local mine = {}
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("Motor6D") then
+			mine[d.Name] = d
+			table.insert(myMotors, { d, d.C0 })
+		end
+	end
+	for _, d in ipairs(tchar:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Enabled and mine[d.Name] then
+			table.insert(jointPairs, { mine[d.Name], d })
+		elseif d:IsA("BasePart") then
+			tparts[d.Name] = d
+		end
+	end
+	if modeSetting == "Parts" then
+		partMode = true
+	elseif modeSetting == "Joints" then
+		partMode = false
+	else
+		partMode = jointsAlive(tchar) < 3
+	end
+	if partMode then
+		info("Target is reanimated - copying by body parts.", MUTED)
+	elseif #jointPairs < 3 and not warnedRig then
+		warnedRig = true
+		info("Rig types differ (R6 vs R15) - only a few joints can be copied.", RED)
+	end
+end
+
+local function applyParts(tchar, char)
+	local tHrp = tchar:FindFirstChild("HumanoidRootPart")
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not (tHrp and hrp) then return end
+	local function desired(part)
+		local tp = tparts[part.Name]
+		if tp and tp.Parent then
+			return hrp.CFrame * tHrp.CFrame:ToObjectSpace(tp.CFrame)
+		end
+	end
+	for _, m in ipairs(myMotors) do
+		local motor = m[1]
+		if motor.Parent and motor.Part0 and motor.Part1 then
+			local d0, d1 = desired(motor.Part0), desired(motor.Part1)
+			if d0 and d1 then
+				motor.C0 = d0:ToObjectSpace(d1) * motor.C1
+				motor.Transform = CFrame.new()
+			end
+		end
+	end
+end
+
+	local function snap()
+		local tchar = target and target.Character
+		local char = player.Character
+		if not (tchar and char) then return end
+		local tHrp = tchar:FindFirstChild("HumanoidRootPart")
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not (tHrp and hrp) then return end
+
+		local offset
+		if side == "Front" then
+			offset = CFrame.new(0, 0, -dist)
+		elseif side == "Behind" then
+			offset = CFrame.new(0, 0, dist)
+		elseif side == "Left" then
+			offset = CFrame.new(-dist, 0, 0)
+		elseif side == "Right" then
+			offset = CFrame.new(dist, 0, 0)
+		else
+			offset = CFrame.new(0, 0, -dist)
+		end
+
+		hrp.CFrame = tHrp.CFrame * offset
+	end
+
+	local stopCopy
+
+	local function run()
+	if not copying then return end
+	if not reanimEnabled then
+		stopCopy("Reanimation turned off - copy stopped")
+		return
+	end
+	local tchar = target and target.Character
+	local char = player.Character
+	if not (tchar and char) then return end
+	if tchar ~= cachedT or char ~= cachedC then
+		rebuild(tchar, char)
+	end
+	local now = os.clock()
+	if modeSetting == "Auto" and now - modeCheck > 0.5 then
+		modeCheck = now
+		if (jointsAlive(tchar) < 3) ~= partMode then
+			rebuild(tchar, char)
+		end
+	end
+	if lock then snap() end
+	if partMode then
+		applyParts(tchar, char)
+	else
+		for _, pair in ipairs(jointPairs) do
+			local mine, theirs = pair[1], pair[2]
+			if mine.Parent and theirs.Parent then
+				mine.Transform = theirs.Transform
+			end
+		end
+	end
+end
+
+	local function startCopy()
+		if not target or not target.Parent then
+			info("Select a player first.", RED)
+			return
+		end
+		if not api then
+			info("Reanimation API failed to load.", RED)
+			return
+		end
+		if not reanimEnabled then
+			info("Enable reanimation first.", RED)
+			return
+		end
+		if copying then return end
+		stopEmote()
+		copying = true
+		warnedRig = false
+		cachedT, cachedC = nil, nil
+		snap()
+		for _, signal in ipairs({ RunService.Stepped, RunService.Heartbeat }) do
+			table.insert(runConns, signal:Connect(function()
+				pcall(run)
+			end))
+		end
+		pcall(RunService.UnbindFromRenderStep, RunService, RS_NAME)
+		RunService:BindToRenderStep(RS_NAME, Enum.RenderPriority.Camera.Value + 2, function()
+			pcall(run)
+		end)
+		copyBtn.Text = "Stop copying"
+		info("Copying " .. target.DisplayName .. " (" .. side .. ")", GREEN)
+		setStatus("Copying " .. target.DisplayName, GREEN)
+	end
+
+	stopCopy = function(reason)
+    restoreMotors()
+		for _, c in ipairs(runConns) do pcall(function() c:Disconnect() end) end
+		table.clear(runConns)
+		pcall(RunService.UnbindFromRenderStep, RunService, RS_NAME)
+		local was = copying
+		copying = false
+		cachedT, cachedC = nil, nil
+		table.clear(jointPairs)
+		copyBtn.Text = "Copy"
+		if was then
+			info(reason or "Stopped copying.", MUTED)
+			refreshStatus()
+		end
+	end
+
+	local function selectTarget(plr)
+		target = plr
+		targetBtn.Text = "Target: " .. plr.DisplayName
+		dd.Visible = false
+		cachedT = nil
+		if copying then
+			info("Copying " .. plr.DisplayName .. " (" .. side .. ")", GREEN)
+			setStatus("Copying " .. plr.DisplayName, GREEN)
+			snap()
+		else
+			info("Press Copy to start.", MUTED)
+		end
+	end
+
+	local function refreshList()
+		for _, r in ipairs(rows) do pcall(function() r:Destroy() end) end
+		table.clear(rows)
+		local q = string.lower(ddSearch.Text or "")
+		local list = Players:GetPlayers()
+		table.sort(list, function(a, b)
+			return a.DisplayName:lower() < b.DisplayName:lower()
+		end)
+		local y = 2
+		for _, plr in ipairs(list) do
+			if plr ~= player then
+				local label = plr.DisplayName .. " (@" .. plr.Name .. ")"
+				if q == "" or string.find(label:lower(), q, 1, true) then
+					local row = Instance.new("TextButton")
+					row.Size = UDim2.new(1, -6, 0, 22)
+					row.Position = UDim2.new(0, 3, 0, y)
+					row.BackgroundTransparency = 1
+					row.Text = label
+					row.TextColor3 = (plr == target) and ORANGE or WHITE
+					row.Font = Enum.Font.Gotham
+					row.TextSize = 12
+					row.TextXAlignment = Enum.TextXAlignment.Left
+					row.TextTruncate = Enum.TextTruncate.AtEnd
+					row.AutoButtonColor = false
+					row.ZIndex = 10
+					row.Parent = ddList
+					row.MouseButton1Click:Connect(function()
+						selectTarget(plr)
+					end)
+					table.insert(rows, row)
+					y = y + 24
+				end
+			end
+		end
+		if #rows == 0 then
+			local empty = Instance.new("TextLabel")
+			empty.Size = UDim2.new(1, -8, 0, 22)
+			empty.Position = UDim2.new(0, 4, 0, 2)
+			empty.BackgroundTransparency = 1
+			empty.Text = "No players found."
+			empty.TextColor3 = MUTED
+			empty.Font = Enum.Font.Gotham
+			empty.TextSize = 12
+			empty.TextXAlignment = Enum.TextXAlignment.Left
+			empty.ZIndex = 10
+			empty.Parent = ddList
+			table.insert(rows, empty)
+			y = y + 24
+		end
+		ddList.CanvasSize = UDim2.new(0, 0, 0, y + 4)
+	end
+
+	targetBtn.MouseButton1Click:Connect(function()
+		dd.Visible = not dd.Visible
+		if dd.Visible then
+			ddSearch.Text = ""
+			refreshList()
+		end
+	end)
+	ddSearch:GetPropertyChangedSignal("Text"):Connect(refreshList)
+
+	track(Players.PlayerAdded:Connect(function()
+		if dd.Visible then refreshList() end
+	end))
+	track(Players.PlayerRemoving:Connect(function(plr)
+		if plr == target then
+			stopCopy("Target left the game")
+			target = nil
+			targetBtn.Text = "Select player..."
+		end
+		task.defer(function()
+			if dd.Visible then refreshList() end
+		end)
+	end))
+
+	copyBtn.MouseButton1Click:Connect(function()
+		dd.Visible = false
+		if copying then stopCopy() else startCopy() end
+	end)
+
+	local function refreshSides()
+		for name, btn in pairs(sideButtons) do
+			local on = name == side
+			btn.BackgroundColor3 = WHITE
+			btn.BackgroundTransparency = on and 0.45 or 0.85
+			btn.TextColor3 = on and WHITE or MUTED
+		end
+	end
+	for name, btn in pairs(sideButtons) do
+		btn.MouseButton1Click:Connect(function()
+			side = name
+			refreshSides()
+			if copying then
+				snap()
+				info("Copying " .. target.DisplayName .. " (" .. side .. ")", GREEN)
+			end
+		end)
+	end
+	refreshSides()
+
+	lockBtn.MouseButton1Click:Connect(function()
+		lock = not lock
+		lockBtn.Text = "Stay beside: " .. (lock and "On" or "Off")
+		lockBtn.TextColor3 = lock and ORANGE or WHITE
+	end)
+
+	local function setDist(v)
+		dist = math.clamp(v, 2, 15)
+		distLabel.Text = "Distance: " .. dist
+		if copying then snap() end
+	end
+	minusBtn.MouseButton1Click:Connect(function() setDist(dist - 1) end)
+	plusBtn.MouseButton1Click:Connect(function() setDist(dist + 1) end)
+
+modeBtn.MouseButton1Click:Connect(function()
+	modeSetting = (modeSetting == "Auto") and "Parts" or (modeSetting == "Parts") and "Joints" or "Auto"
+	modeBtn.Text = "Mode: " .. modeSetting
+	cachedT = nil
+end)
+
+	return panel, stopCopy
 end)()
 
 local LIMB_LENGTH = 75000
@@ -2294,7 +2750,6 @@ local function makeRow(entry, y, mode)
 		delBtn.MouseButton1Click:Connect(function()
 			local path = entry.path
 			if bin.pending ~= path then
-
 				bin.pending = path
 				setStatus("Click the bin again to delete " .. entry.name, MUTED)
 				layoutEmotes()
@@ -2341,7 +2796,7 @@ layoutEmotes = function()
 	local savedScroll = emotesScroll.CanvasPosition
 	clearEmoteRows()
 	hasMore = false
-	if emoteMode == "Speed" then
+	if emoteMode == "Speed" or emoteMode == "AnimCopy" then
 		emotesScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 		return
 	end
@@ -2474,15 +2929,17 @@ local function setActiveTab(tabName)
 	end
 
 	local isSpeed = tabName == "Speed"
-	local isLimb = tabName == "Limb"
-	local isState = tabName == "State"
-	local isCustom = tabName == "Custom"
-	speedPanel.Visible = isSpeed
-	limbPanel.Visible = isLimb
-	st.panel.Visible = isState
-	customForm.Visible = isCustom
-	emotesScroll.Visible = not (isSpeed or isLimb or isState)
-	searchBox.Visible = not (isSpeed or isLimb or isState)
+local isLimb = tabName == "Limb"
+local isState = tabName == "State"
+local isCopy = tabName == "AnimCopy"
+local isCustom = tabName == "Custom"
+speedPanel.Visible = isSpeed
+limbPanel.Visible = isLimb
+st.panel.Visible = isState
+st.copyPanel.Visible = isCopy
+customForm.Visible = isCustom
+emotesScroll.Visible = not (isSpeed or isLimb or isState or isCopy)
+searchBox.Visible = not (isSpeed or isLimb or isState or isCopy)
 	local top = isCustom and (LIST_Y + CUSTOM_FORM_H) or LIST_Y
 	emotesScroll.Position = UDim2.new(0, 0, 0, top)
 	emotesScroll.Size = UDim2.new(1, 0, 1, -(top + 6))
@@ -2509,9 +2966,9 @@ for i, tabName in ipairs(emoteTabNames) do
 	tab.Size = UDim2.new(1 / #emoteTabNames, -4, 1, 0)
 	tab.Position = UDim2.new((i - 1) / #emoteTabNames, 2, 0, 0)
 	tab.BackgroundTransparency = 1
-	tab.Text = tabName
+	tab.Text = (tabName == "AnimCopy") and "Copy" or tabName
 	tab.Font = Enum.Font.GothamMedium
-	tab.TextSize = 11
+	tab.TextSize = 10
 	tab.TextColor3 = MUTED
 	tab.AutoButtonColor = false
 	tab.ZIndex = 3
@@ -2685,6 +3142,7 @@ end
 track(player.CharacterAdded:Connect(function()
 	stopEmote()
 	if follow then follow.kill() end
+    pcall(st.copyStop, "Respawned - copy stopped")
 	task.delay(0.5, function()
 		reanimEnabled = api and api.is_reanimated and api.is_reanimated() or false
 		updateReanimVisual(false)
@@ -2970,6 +3428,7 @@ env[CLEANUP_KEY] = function()
 	pcall(limb.kill)
 	pcall(limbLeft.kill)
 	pcall(follow.kill)
+    pcall(st.copyStop)
 	stopEmote()
 	if api and api.reanimate and api.is_reanimated and api.is_reanimated() then
 		pcall(api.reanimate, false)
