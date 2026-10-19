@@ -10,7 +10,8 @@
     "sfly": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/sfly.lua",
     "reverse": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/reverse.lua",
     "ugc-emotes": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/ugcemotes.lua",
-    "touch-fling": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/touchfling.lua"
+    "touch-fling": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/touchfling.lua",
+    "tptool": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciertptool.lua"
   },
   "commands": [
     { "name": "antivc", "kind": "url", "category": "Buttons", "urlKey": "antivc" },
@@ -32,7 +33,8 @@
     { "name": "noclip", "kind": "builtin", "category": "Toggles" },
     { "name": "infjump", "kind": "builtin", "category": "Toggles" },
     { "name": "infzoom", "kind": "builtin", "category": "Toggles" },
-    { "name": "fullbright", "kind": "builtin", "category": "Toggles" }
+    { "name": "fullbright", "kind": "builtin", "category": "Toggles" },
+    { "name": "tptool", "kind": "url", "category": "Toggles", "urlKey": "tptool" }
   ],
   "externals": [
     { "name": "Infinite Yield", "urlKey": "infiniteYield" },
