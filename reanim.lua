@@ -43,6 +43,8 @@ local function localLookup(url)
 	return nil
 end
 
+-- Loads the reanimation API in a private environment. Only the API sees the
+-- fake game/request, so no global function is hooked and nothing is detectable.
 local function loadApiSandboxed(source)
 	local realGame = game
 	local genv = (getgenv and getgenv()) or _G
@@ -972,6 +974,7 @@ end
 
 task.spawn(getLogoAsset)
 
+-- delete (bin) icon: embedded in the script, written to disk once, no HTTP needed
 local bin = { pending = nil, asset = nil }
 __i = function()
 	local BIN_FILE = FOLDER_ROOT .. "/bin.png"
@@ -1210,6 +1213,10 @@ __i = function()
 end
 __i()
 
+
+-- ===================== STATE PANEL (Idle / Run) =====================
+-- Card layout matching the Limb page. Collapsible Idle/Run dropdowns.
+-- Wrapped so locals stay under the 200-register limit.
 st.panel, st.refreshLists = (function()
 	local CARD_BG = Color3.fromRGB(18, 18, 18)
 	local COLLAPSED_H = 70
@@ -1259,6 +1266,7 @@ st.panel, st.refreshLists = (function()
 		desc.Parent = parent
 	end
 
+	-- Enable card
 	local enableCard = makeFeatureCard(panel, 0, 88)
 	local enableBtn = makeGlassButton(enableCard, "State animations: On", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
 	makeCardDesc(enableCard, "Auto-plays idle when standing still and run when moving. Enable reanimation first.", 38)
@@ -1303,6 +1311,7 @@ st.panel, st.refreshLists = (function()
 		local card = makeFeatureCard(panel, 0, COLLAPSED_H)
 		local expanded = false
 
+		-- Header row (always visible) — click to toggle dropdown
 		local headerBtn = Instance.new("TextButton")
 		headerBtn.Size = UDim2.new(1, -66, 0, 54)
 		headerBtn.Position = UDim2.new(0, 0, 0, 0)
@@ -1353,6 +1362,7 @@ st.panel, st.refreshLists = (function()
 		local clearBtn = makeGlassButton(card, "Clear", UDim2.new(0, 50, 0, 22), UDim2.new(1, -58, 0, 8))
 		clearBtn.TextSize = 11
 
+		-- Dropdown body (hidden when collapsed)
 		local dropBody = Instance.new("Frame")
 		dropBody.Size = UDim2.new(1, -16, 0, EXPANDED_H - COLLAPSED_H - 4)
 		dropBody.Position = UDim2.new(0, 8, 0, COLLAPSED_H - 4)
@@ -1402,6 +1412,7 @@ st.panel, st.refreshLists = (function()
 			chevron.Rotation = value and 90 or 0
 			chevron.TextColor3 = value and WHITE or MUTED
 			if value then
+				-- collapse other sections
 				for _, other in ipairs(sections) do
 					if other ~= sec and other.expanded then
 						other.setExpanded(false)
@@ -1607,6 +1618,9 @@ st.panel, st.refreshLists = (function()
 	return panel, refresh
 end)()
 
+-- ===================== ANIMCOPY PANEL =====================
+-- Pick a player, hit Copy: you snap beside them and mirror every joint
+-- (Motor6D) of their character each frame, so ALL their animations are copied.
 st.copyPanel, st.copyStop = (function()
 	local RS_NAME = "animcopy_mirror"
 
@@ -1640,6 +1654,7 @@ st.copyPanel, st.copyStop = (function()
     local tparts = {}
     local modeCheck = 0
 
+	-- UI -----------------------------------------------------------------
 	local targetBtn = makeGlassButton(panel, "Select player...", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 0))
 	local copyBtn = makeGlassButton(panel, "Copy", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 34))
 
@@ -1703,6 +1718,7 @@ st.copyPanel, st.copyStop = (function()
 		infoLabel.TextColor3 = color or MUTED
 	end
 
+	-- Dropdown -----------------------------------------------------------
 	local dd = Instance.new("Frame")
 	dd.Size = UDim2.new(1, 0, 0, 160)
 	dd.Position = UDim2.new(0, 0, 0, 30)
@@ -1927,11 +1943,12 @@ end
 		end
 	end
 
+	-- Dropdown logic -----------------------------------------------------
 	local function selectTarget(plr)
 		target = plr
 		targetBtn.Text = "Target: " .. plr.DisplayName
 		dd.Visible = false
-		cachedT = nil
+		cachedT = nil -- force rebuild if we're mid-copy (switches live)
 		if copying then
 			info("Copying " .. plr.DisplayName .. " (" .. side .. ")", GREEN)
 			setStatus("Copying " .. plr.DisplayName, GREEN)
@@ -2016,6 +2033,7 @@ end
 		end)
 	end))
 
+	-- Buttons ------------------------------------------------------------
 	copyBtn.MouseButton1Click:Connect(function()
 		dd.Visible = false
 		if copying then stopCopy() else startCopy() end
@@ -2058,7 +2076,7 @@ end
 modeBtn.MouseButton1Click:Connect(function()
 	modeSetting = (modeSetting == "Auto") and "Parts" or (modeSetting == "Parts") and "Joints" or "Auto"
 	modeBtn.Text = "Mode: " .. modeSetting
-	cachedT = nil
+	cachedT = nil -- force rebuild with the new mode
 end)
 
 	return panel, stopCopy
@@ -2750,6 +2768,7 @@ local function makeRow(entry, y, mode)
 		delBtn.MouseButton1Click:Connect(function()
 			local path = entry.path
 			if bin.pending ~= path then
+				-- first click arms it, second click deletes
 				bin.pending = path
 				setStatus("Click the bin again to delete " .. entry.name, MUTED)
 				layoutEmotes()
@@ -2890,6 +2909,7 @@ local function scanFolder()
 	for k, v in pairs(map) do localFiles[k] = v end
 	table.sort(newList, function(a, b) return a.name:lower() < b.name:lower() end)
 
+	-- only rebuild the UI if something actually changed
 	local changed = #newList ~= #folderEmotes
 	if not changed then
 		for i, e in ipairs(newList) do
