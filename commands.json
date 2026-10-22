@@ -11,7 +11,8 @@
     "reverse": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/reverse.lua",
     "ugc-emotes": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/ugcemotes.lua",
     "touch-fling": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/touchfling.lua",
-    "tptool": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciertptool.lua"
+    "tptool": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciertptool.lua",
+    "mobileshiftlock": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/mobileshiftlock.lua"
   },
   "commands": [
     { "name": "antivc", "kind": "url", "category": "Buttons", "urlKey": "antivc" },
@@ -22,6 +23,7 @@
     { "name": "reverse", "kind": "url", "category": "Buttons", "urlKey": "reverse" },
     { "name": "ugc-emotes", "kind": "url", "category": "Buttons", "urlKey": "ugc-emotes" },
     { "name": "touch-fling", "kind": "url", "category": "Buttons", "urlKey": "touch-fling" },
+    { "name": "mobileshiftlock", "kind": "url", "category": "Buttons", "urlKey": "mobileshiftlock" },
     { "name": "tptool", "kind": "url", "category": "Toggles", "urlKey": "tptool" },
     { "name": "rejoin", "kind": "builtin", "category": "Buttons" },
     { "name": "tpreset", "kind": "builtin", "category": "Buttons" },
