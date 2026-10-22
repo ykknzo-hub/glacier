@@ -9,7 +9,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local GUI_NAME = "ugcemoteshub"
 local CLEANUP_KEY = "__ugc_emotes_hub_cleanup"
-local FAV_FILE = "FavoritedEmotes.txt"
+local GLACIER_DIR = "glacier"
+local FAVE_DIR = GLACIER_DIR .. "/favemotes"
+local FAV_FILE = FAVE_DIR .. "/favourites.json"
+local OLD_FAV_FILES = { GLACIER_DIR .. "/favemotes.json", "FavoritedEmotes.txt" }
 local BIND_FILE = "EmoteKeybinds.txt"
 local LOGO_FILE = "keyboardbind.png"
 local LOGO_URL = "https://file.garden/an4tZIrGtwwEohVh/keyboard%20(1).png"
@@ -82,9 +85,87 @@ local function getLogoAsset()
 	return logoAsset
 end
 
-local function addEmote(name, id, price)
+local function ensureFaveFolder()
+	if type(makefolder) ~= "function" or type(isfolder) ~= "function" then return end
+	pcall(function()
+		if not isfolder(GLACIER_DIR) then makefolder(GLACIER_DIR) end
+		if not isfolder(FAVE_DIR) then makefolder(FAVE_DIR) end
+	end)
+end
+
+local emoteIds = {}
+
+local function addEmote(name, id, price, direct)
 	if not (name and id) then return end
-	table.insert(emotes, { name = tostring(name), id = id, price = price or 0 })
+	if emoteIds[id] then return end
+	emoteIds[id] = true
+	table.insert(emotes, { name = tostring(name), id = id, price = price or 0, direct = direct })
+end
+
+local VIP_EMOTES = {
+	{ "Handstand", 13027233338 },
+	{ "VIP 01", 124072584017964 },
+	{ "VIP 03", 137445502103066 },
+	{ "VIP 08", 11137338685 },
+	{ "Ghostly", 124385779438289 },
+	{ "Oof", 134763058840745 },
+	{ "Die", 14852161489 },
+	{ "Log", 116818881329505 },
+}
+for _, vip in ipairs(VIP_EMOTES) do
+	addEmote(vip[1], vip[2], 0, true)
+end
+
+local DEFAULT_EMOTES = {
+	{ "Wave", 507770239 },
+	{ "Point", 507770453 },
+	{ "Laugh", 507770818 },
+	{ "Cheer", 507770677 },
+	{ "Dance", 507771019 },
+	{ "Dance2", 507776043 },
+	{ "Dance3", 507777268 },
+}
+for _, d in ipairs(DEFAULT_EMOTES) do
+	addEmote(d[1], d[2], 0, true)
+end
+
+local EMOTE_JSON_URL = "https://raw.githubusercontent.com/7yd7/sniper-Emote/refs/heads/test/EmoteSniper.json"
+
+local function fetchBody(url)
+	local req = (syn and syn.request) or (http and http.request) or http_request or request
+	if req then
+		local ok, res = pcall(function() return req({ Url = url, Method = "GET" }) end)
+		if ok and res then
+			local body = res.Body or res.body
+			if type(body) == "string" and #body > 0 then return body end
+		end
+	end
+	local ok2, body2 = pcall(function() return game:HttpGet(url) end)
+	if ok2 and type(body2) == "string" and #body2 > 0 then return body2 end
+	return nil
+end
+
+local function parseEmoteJSON(body)
+	local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+	if not ok or type(data) ~= "table" then return {} end
+	local list = {}
+	local container = data.emotes or data.data or data.Emotes or data
+	for k, v in pairs(container) do
+		if type(v) == "table" then
+			local rawId = v.id or v.assetId or v.animId or v.AnimationId or v.EmoteId or v.asset_id
+			local id = rawId and tonumber((tostring(rawId):gsub("%D", ""))) or nil
+			local name = v.name or v.Name or v.title or v.title_name or tostring(k)
+			if id then
+				table.insert(list, { name = tostring(name), id = id })
+			end
+		elseif type(v) == "number" or type(v) == "string" then
+			local num = tonumber((tostring(v):gsub("%D", "")))
+			if num then
+				table.insert(list, { name = tostring(k), id = num })
+			end
+		end
+	end
+	return list
 end
 
 local function isFav(id)
@@ -94,6 +175,7 @@ end
 local function saveFavorites()
 	pcall(function()
 		if type(writefile) == "function" then
+			ensureFaveFolder()
 			writefile(FAV_FILE, HttpService:JSONEncode(favorites))
 		end
 	end)
@@ -107,12 +189,26 @@ local function saveKeybinds()
 	end)
 end
 
+ensureFaveFolder()
+
 pcall(function()
-	if type(isfile) == "function" and isfile(FAV_FILE) then
+	if type(isfile) ~= "function" then return end
+	if isfile(FAV_FILE) then
 		local data = HttpService:JSONDecode(readfile(FAV_FILE))
 		if type(data) == "table" then
 			favorites = data
 		end
+	else
+		for _, oldPath in ipairs(OLD_FAV_FILES) do
+			if isfile(oldPath) then
+				local data = HttpService:JSONDecode(readfile(oldPath))
+				if type(data) == "table" then
+					favorites = data
+				end
+				break
+			end
+		end
+		saveFavorites()
 	end
 end)
 
@@ -141,9 +237,50 @@ local function getBindName(emoteId)
 	return keybinds[emoteId]
 end
 
+local currentDirect, currentDirectId
+
+local function stopDirect()
+	if currentDirect then
+		pcall(function()
+			currentDirect:Stop(0.1)
+			currentDirect:Destroy()
+		end)
+	end
+	currentDirect, currentDirectId = nil, nil
+end
+
+local function playDirect(humanoid, entry)
+	if currentDirectId == entry.id then
+		stopDirect()
+		return
+	end
+	stopDirect()
+	local anim = Instance.new("Animation")
+	anim.AnimationId = "rbxassetid://" .. tostring(entry.id)
+	local ok, trackObj = pcall(function()
+		local animator = humanoid:FindFirstChildOfClass("Animator")
+		if animator then
+			return animator:LoadAnimation(anim)
+		end
+		return humanoid:LoadAnimation(anim)
+	end)
+	if not ok or not trackObj then return end
+	pcall(function()
+		trackObj.Priority = Enum.AnimationPriority.Action4
+		trackObj:Play()
+	end)
+	currentDirect = trackObj
+	currentDirectId = entry.id
+end
+
 local function playEmote(entry)
 	local char = player.Character
 	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+	if humanoid and entry.direct then
+		playDirect(humanoid, entry)
+		return
+	end
+	stopDirect()
 	if not humanoid or humanoid.RigType == Enum.HumanoidRigType.R6 then
 		return
 	end
@@ -284,9 +421,22 @@ end
 
 updateTabs()
 
+local countLabel = Instance.new("TextLabel")
+countLabel.Name = "CountLabel"
+countLabel.Position = UDim2.new(0, 12, 0, 32)
+countLabel.Size = UDim2.new(1, -24, 0, 14)
+countLabel.BackgroundTransparency = 1
+countLabel.Text = "0 out of 0 emotes loaded"
+countLabel.TextColor3 = MUTED
+countLabel.Font = Enum.Font.Gotham
+countLabel.TextSize = 11
+countLabel.TextXAlignment = Enum.TextXAlignment.Left
+countLabel.ZIndex = 3
+countLabel.Parent = body
+
 local searchBox = Instance.new("TextBox")
 searchBox.Size = UDim2.new(1, -24, 0, 26)
-searchBox.Position = UDim2.new(0, 12, 0, 36)
+searchBox.Position = UDim2.new(0, 12, 0, 50)
 searchBox.BackgroundColor3 = BOX_COLOR
 searchBox.BorderSizePixel = 0
 searchBox.Text = ""
@@ -300,7 +450,7 @@ searchBox.ZIndex = 3
 searchBox.Parent = body
 makeCorner(searchBox, 6)
 
-local LIST_Y = 70
+local LIST_Y = 84
 local list = Instance.new("ScrollingFrame")
 list.Name = "EmoteList"
 list.Position = UDim2.new(0, 0, 0, LIST_Y)
@@ -371,7 +521,8 @@ local function makeRow(entry, y, isRandom)
 	nameLabel.ZIndex = 3
 	nameLabel.Parent = row
 
-	local playBtn = makeRowButton(row, "Play", 40, 0)
+	local isPlayingDirect = (not isRandom) and entry.direct and currentDirectId == entry.id
+	local playBtn = makeRowButton(row, isPlayingDirect and "Stop" or "Play", 40, 0)
 	playBtn.MouseButton1Click:Connect(function()
 		if isRandom then
 			if #emotes > 0 then
@@ -380,6 +531,7 @@ local function makeRow(entry, y, isRandom)
 		else
 			playEmote(entry)
 		end
+		layout()
 	end)
 
 	if not isRandom then
@@ -475,6 +627,7 @@ layout = function()
 
 	if loading and #emotes == 0 then
 		list.CanvasSize = UDim2.new(0, 0, 0, 0)
+		countLabel.Text = "0 out of 0 emotes loaded"
 		addMessage("Loading emotes...")
 		return
 	end
@@ -532,6 +685,7 @@ layout = function()
 
 	list.CanvasSize = UDim2.new(0, 0, 0, y + 6)
 	list.CanvasPosition = savedScroll
+	countLabel.Text = shown .. " out of " .. #filtered .. " emotes loaded"
 
 	if shown == 0 then
 		if currentPage == "favs" then
@@ -586,6 +740,24 @@ task.spawn(function()
 	layout()
 end)
 layout()
+
+task.spawn(function()
+	local jsonBody
+	for _ = 1, 5 do
+		if not alive then return end
+		jsonBody = fetchBody(EMOTE_JSON_URL)
+		if jsonBody then break end
+		task.wait(3)
+	end
+	if not jsonBody or not alive then return end
+	for _, e in ipairs(parseEmoteJSON(jsonBody)) do
+		addEmote(e.name, e.id, 0)
+	end
+	table.sort(emotes, function(a, b)
+		return a.name:lower() < b.name:lower()
+	end)
+	layout()
+end)
 
 task.spawn(function()
 	local params = CatalogSearchParams.new()
@@ -730,8 +902,14 @@ track(player.Chatted:Connect(function(message)
 	end
 end))
 
+track(player.CharacterAdded:Connect(function()
+	stopDirect()
+	layout()
+end))
+
 local function cleanup()
 	alive = false
+	stopDirect()
 	for _, connection in ipairs(connections) do
 		pcall(function()
 			connection:Disconnect()
