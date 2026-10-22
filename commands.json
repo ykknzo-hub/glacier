@@ -4,7 +4,7 @@
     "antivc": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciervc.lua",
     "reanimation": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/reanim.lua",
     "infiniteYield": "https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source",
-    "tagScript": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciertags.lua",
+    "tagScript": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/glaciartags.lua",
     "vip-emotes": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/vipemotes.lua",
     "trip": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/trip.lua",
     "sfly": "https://raw.githubusercontent.com/ykknzo-hub/glacier/refs/heads/main/sfly.lua",
@@ -19,7 +19,10 @@
     { "name": "vip-emotes", "kind": "url", "category": "Buttons", "urlKey": "vip-emotes" },
     { "name": "trip", "kind": "url", "category": "Buttons", "urlKey": "trip" },
     { "name": "sfly", "kind": "url", "category": "Buttons", "urlKey": "sfly" },
+    { "name": "reverse", "kind": "url", "category": "Buttons", "urlKey": "reverse" },
     { "name": "ugc-emotes", "kind": "url", "category": "Buttons", "urlKey": "ugc-emotes" },
+    { "name": "touch-fling", "kind": "url", "category": "Buttons", "urlKey": "touch-fling" },
+    { "name": "tptool", "kind": "url", "category": "Toggles", "urlKey": "tptool" },
     { "name": "rejoin", "kind": "builtin", "category": "Buttons" },
     { "name": "tpreset", "kind": "builtin", "category": "Buttons" },
     { "name": "reset", "kind": "builtin", "category": "Buttons" },
@@ -33,8 +36,7 @@
     { "name": "noclip", "kind": "builtin", "category": "Toggles" },
     { "name": "infjump", "kind": "builtin", "category": "Toggles" },
     { "name": "infzoom", "kind": "builtin", "category": "Toggles" },
-    { "name": "fullbright", "kind": "builtin", "category": "Toggles" },
-    { "name": "tptool", "kind": "url", "category": "Toggles", "urlKey": "tptool" }
+    { "name": "fullbright", "kind": "builtin", "category": "Toggles" }
   ],
   "externals": [
     { "name": "Infinite Yield", "urlKey": "infiniteYield" },
