@@ -24,6 +24,7 @@ local DEFAULTS = {
 
 local FOLDER_ROOT = "glacier"
 local FOLDER_PATH = "glacier/customs"
+local KEYFRAME_PATH = "glacier/keyframes"
 local LOCAL_HOST = "https://glacier.local/"
 local localFiles = {}
 
@@ -31,6 +32,7 @@ pcall(function()
 	if type(makefolder) == "function" and type(isfolder) == "function" then
 		if not isfolder(FOLDER_ROOT) then makefolder(FOLDER_ROOT) end
 		if not isfolder(FOLDER_PATH) then makefolder(FOLDER_PATH) end
+		if not isfolder(KEYFRAME_PATH) then makefolder(KEYFRAME_PATH) end
 	end
 end)
 
@@ -43,8 +45,6 @@ local function localLookup(url)
 	return nil
 end
 
--- Loads the reanimation API in a private environment. Only the API sees the
--- fake game/request, so no global function is hooked and nothing is detectable.
 local function loadApiSandboxed(source)
 	local realGame = game
 	local genv = (getgenv and getgenv()) or _G
@@ -470,7 +470,55 @@ local folderEmotes = {}
 local customEmotes = {}
 local favorites = {}
 local binds = {}
-local st = { idle = nil, run = nil, current = nil, enabled = true, url = nil }
+local st = {
+	idle = nil,
+	run = nil,
+	current = nil,
+	enabled = true,
+	url = nil,
+	poles = {},
+	poleButtons = {},
+	poleSize = {},
+	poleSizeLabels = {},
+	poleDefaultSize = 10,
+	stretchUI = { RightArm = {}, LeftArm = {} },
+}
+
+st.safeFileName = function(name)
+	local base = tostring(name or "custom"):gsub("%.[^%.]+$", "")
+	base = base:gsub("[^%w%-_ ]", ""):gsub("%s+", "_")
+	if base == "" then base = "custom" end
+	return base
+end
+
+st.shortHash = function(text)
+	local h = 5381
+	for i = 1, #text do
+		h = (h * 33 + text:byte(i)) % 4294967296
+	end
+	return string.format("%08x", h)
+end
+
+st.isKeyframeFile = function(url)
+	return type(url) == "string"
+		and url:sub(1, #KEYFRAME_PATH + 1) == KEYFRAME_PATH .. "/"
+end
+
+st.writeKeyframeFile = function(name, source)
+	if type(source) ~= "string" or source == "" then return nil end
+	if type(writefile) ~= "function" then return nil end
+	if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder(KEYFRAME_PATH) then
+		pcall(makefolder, KEYFRAME_PATH)
+	end
+	local path = KEYFRAME_PATH .. "/" .. st.safeFileName(name) .. "_" .. st.shortHash(source) .. ".lua"
+	if type(isfile) == "function" and isfile(path) then
+		return path
+	end
+	local ok = pcall(writefile, path, source)
+	if not ok then return nil end
+	return path
+end
+
 local __i
 local DATA_FILE = "reanimation_hub_data.json"
 local GREEN = Color3.fromRGB(220, 220, 220)
@@ -491,8 +539,23 @@ local function loadData()
 			end
 			if type(data.custom) == "table" then
 				for _, item in ipairs(data.custom) do
-					if type(item) == "table" and type(item.name) == "string" and type(item.url) == "string" then
-						table.insert(customEmotes, { name = item.name, url = item.url, custom = true })
+					if type(item) == "table" and type(item.name) == "string" then
+						local kind = type(item.kind) == "string" and item.kind or "link"
+						local url = type(item.url) == "string" and item.url or nil
+						local source = type(item.source) == "string" and item.source or nil
+						if kind ~= "link" and source then
+							local path = st.writeKeyframeFile(item.name, source)
+							if path then url = path end
+						end
+						if url then
+							table.insert(customEmotes, {
+								name = item.name,
+								url = url,
+								custom = true,
+								kind = kind,
+								source = source,
+							})
+						end
 					end
 				end
 			end
@@ -513,7 +576,12 @@ local function saveData()
 	if type(writefile) == "function" then
 		local custom = {}
 		for _, item in ipairs(customEmotes) do
-			table.insert(custom, { name = item.name, url = item.url })
+			table.insert(custom, {
+				name = item.name,
+				url = item.url,
+				kind = item.kind,
+				source = item.source,
+			})
 		end
 		pcall(function()
 			writefile(DATA_FILE, HttpService:JSONEncode({
@@ -535,7 +603,7 @@ local SEARCH_Y = STATUS_Y + 36
 local TAB_DIV_Y = SEARCH_Y + 34
 local TAB_Y = TAB_DIV_Y + 4
 local LIST_Y = TAB_Y + 30
-local CUSTOM_FORM_H = 92
+local customFormH = 120
 
 homeStatus = Instance.new("TextLabel")
 homeStatus.Name = "Status"
@@ -657,6 +725,11 @@ enableButton.MouseButton1Click:Connect(function()
 	end
 	local ok = setReanimated(not reanimEnabled)
 	reanimEnabled = api.is_reanimated and api.is_reanimated() or false
+	if not reanimEnabled then
+		for _, pole in pairs(st.poles) do
+			pcall(pole.kill)
+		end
+	end
 	updateReanimVisual(true)
 	if ok then
 		refreshStatus()
@@ -748,15 +821,299 @@ end
 local customForm = Instance.new("Frame")
 customForm.Name = "CustomForm"
 customForm.Position = UDim2.new(0, 12, 0, LIST_Y + 4)
-customForm.Size = UDim2.new(1, -24, 0, CUSTOM_FORM_H - 8)
+customForm.Size = UDim2.new(1, -24, 0, customFormH - 8)
 customForm.BackgroundTransparency = 1
 customForm.Visible = false
 customForm.ZIndex = 3
 customForm.Parent = body
 
 local customNameBox = makeBox(customForm, "Emote name", 0)
-local customUrlBox = makeBox(customForm, "Animation script URL", 28)
-local customAddButton = makeGlassButton(customForm, "Add emote", UDim2.new(1, 0, 0, 24), UDim2.new(0, 0, 0, 56))
+
+local customUI = {
+	mode = "link",
+	pending = nil,
+	modeButtons = {},
+}
+
+customUI.modeRow = Instance.new("Frame")
+customUI.modeRow.Name = "CustomModes"
+customUI.modeRow.Size = UDim2.new(1, 0, 0, 24)
+customUI.modeRow.Position = UDim2.new(0, 0, 0, 28)
+customUI.modeRow.BackgroundTransparency = 1
+customUI.modeRow.ZIndex = 3
+customUI.modeRow.Parent = customForm
+
+customUI.modeButtons.link = makeGlassButton(
+	customUI.modeRow, "Link",
+	UDim2.new(1 / 3, -4, 0, 24), UDim2.new(0, 2, 0, 0)
+)
+customUI.modeButtons.keyframes = makeGlassButton(
+	customUI.modeRow, "Keyframes",
+	UDim2.new(1 / 3, -4, 0, 24), UDim2.new(1 / 3, 1, 0, 0)
+)
+customUI.modeButtons.file = makeGlassButton(
+	customUI.modeRow, "File",
+	UDim2.new(1 / 3, -4, 0, 24), UDim2.new(2 / 3, 0, 0, 0)
+)
+
+local customUrlBox = makeBox(customForm, "Animation script URL", 56)
+
+customUI.fileRow = Instance.new("Frame")
+customUI.fileRow.Name = "CustomFileRow"
+customUI.fileRow.Size = UDim2.new(1, 0, 0, 24)
+customUI.fileRow.Position = UDim2.new(0, 0, 0, 56)
+customUI.fileRow.BackgroundTransparency = 1
+customUI.fileRow.Visible = false
+customUI.fileRow.ZIndex = 3
+customUI.fileRow.Parent = customForm
+
+customUI.fileBox = makeBox(customUI.fileRow, "Path to keyframe .lua file", 0)
+customUI.fileBox.Size = UDim2.new(1, -68, 0, 24)
+customUI.browseButton = makeGlassButton(
+	customUI.fileRow, "Browse",
+	UDim2.new(0, 64, 0, 24),
+	UDim2.new(1, -64, 0, 0)
+)
+
+customUI.keyRow = Instance.new("Frame")
+customUI.keyRow.Name = "CustomKeyRow"
+customUI.keyRow.Size = UDim2.new(1, 0, 0, 24)
+customUI.keyRow.Position = UDim2.new(0, 0, 0, 56)
+customUI.keyRow.BackgroundTransparency = 1
+customUI.keyRow.Visible = false
+customUI.keyRow.ZIndex = 3
+customUI.keyRow.Parent = customForm
+
+customUI.keyButton = makeGlassButton(
+	customUI.keyRow, "Open keyframe editor...",
+	UDim2.new(1, 0, 0, 24),
+	UDim2.new(0, 0, 0, 0)
+)
+
+local customAddButton = makeGlassButton(customForm, "Add emote", UDim2.new(1, 0, 0, 24), UDim2.new(0, 0, 0, 84))
+
+customUI.updateKeyButton = function()
+	local size = customUI.pending and #customUI.pending or 0
+	if size <= 0 then
+		customUI.keyButton.Text = "Open keyframe editor..."
+	elseif size >= 1024 then
+		customUI.keyButton.Text = string.format("Edit keyframes (%.1f KB loaded)", size / 1024)
+	else
+		customUI.keyButton.Text = string.format("Edit keyframes (%d bytes loaded)", size)
+	end
+end
+
+customUI.setMode = function(mode)
+	customUI.mode = mode
+	for key, btn in pairs(customUI.modeButtons) do
+		local active = key == mode
+		btn.TextColor3 = active and WHITE or MUTED
+		btn.BackgroundTransparency = active and 0.7 or 0.9
+	end
+	customUrlBox.Visible = mode == "link"
+	customUI.fileRow.Visible = mode == "file"
+	customUI.keyRow.Visible = mode == "keyframes"
+end
+
+customUI.modeButtons.link.MouseButton1Click:Connect(function()
+	customUI.setMode("link")
+end)
+customUI.modeButtons.keyframes.MouseButton1Click:Connect(function()
+	customUI.setMode("keyframes")
+end)
+customUI.modeButtons.file.MouseButton1Click:Connect(function()
+	customUI.setMode("file")
+end)
+
+customUI.keyEditor = Instance.new("TextButton")
+customUI.keyEditor.Name = "KeyframeEditor"
+customUI.keyEditor.Size = UDim2.new(1, 0, 1, 0)
+customUI.keyEditor.BackgroundColor3 = BODY_COLOR
+customUI.keyEditor.BackgroundTransparency = 0.02
+customUI.keyEditor.BorderSizePixel = 0
+customUI.keyEditor.Text = ""
+customUI.keyEditor.AutoButtonColor = false
+customUI.keyEditor.Modal = true
+customUI.keyEditor.Visible = false
+customUI.keyEditor.ZIndex = 20
+customUI.keyEditor.Parent = mainFrame
+makeCorner(customUI.keyEditor, 4)
+
+customUI.keyEditorTitle = Instance.new("TextLabel")
+customUI.keyEditorTitle.Size = UDim2.new(1, -24, 0, 22)
+customUI.keyEditorTitle.Position = UDim2.new(0, 12, 0, 10)
+customUI.keyEditorTitle.BackgroundTransparency = 1
+customUI.keyEditorTitle.Text = "Keyframes"
+customUI.keyEditorTitle.TextColor3 = WHITE
+customUI.keyEditorTitle.Font = Enum.Font.GothamBold
+customUI.keyEditorTitle.TextSize = 14
+customUI.keyEditorTitle.TextXAlignment = Enum.TextXAlignment.Left
+customUI.keyEditorTitle.ZIndex = 21
+customUI.keyEditorTitle.Parent = customUI.keyEditor
+
+customUI.keyDefaultHint = "Paste keyframe .lua text, or use Paste clipboard / File mode for big files."
+
+customUI.keyEditorHint = Instance.new("TextLabel")
+customUI.keyEditorHint.Size = UDim2.new(1, -24, 0, 30)
+customUI.keyEditorHint.Position = UDim2.new(0, 12, 0, 34)
+customUI.keyEditorHint.BackgroundTransparency = 1
+customUI.keyEditorHint.Text = customUI.keyDefaultHint
+customUI.keyEditorHint.TextColor3 = MUTED
+customUI.keyEditorHint.Font = Enum.Font.Gotham
+customUI.keyEditorHint.TextSize = 11
+customUI.keyEditorHint.TextXAlignment = Enum.TextXAlignment.Left
+customUI.keyEditorHint.TextYAlignment = Enum.TextYAlignment.Top
+customUI.keyEditorHint.TextWrapped = true
+customUI.keyEditorHint.ZIndex = 21
+customUI.keyEditorHint.Parent = customUI.keyEditor
+
+customUI.keyBox = Instance.new("TextBox")
+customUI.keyBox.Name = "KeyframeText"
+customUI.keyBox.Size = UDim2.new(1, -24, 1, -132)
+customUI.keyBox.Position = UDim2.new(0, 12, 0, 70)
+customUI.keyBox.BackgroundColor3 = BOX_COLOR
+customUI.keyBox.BorderSizePixel = 0
+customUI.keyBox.Text = ""
+customUI.keyBox.PlaceholderText = "Paste keyframes here..."
+customUI.keyBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+customUI.keyBox.TextColor3 = WHITE
+customUI.keyBox.Font = Enum.Font.Code
+customUI.keyBox.TextSize = 11
+customUI.keyBox.TextXAlignment = Enum.TextXAlignment.Left
+customUI.keyBox.TextYAlignment = Enum.TextYAlignment.Top
+customUI.keyBox.MultiLine = true
+customUI.keyBox.TextWrapped = true
+customUI.keyBox.ClearTextOnFocus = false
+customUI.keyBox.ZIndex = 21
+customUI.keyBox.Parent = customUI.keyEditor
+makeCorner(customUI.keyBox, 4)
+
+customUI.keyPaste = makeGlassButton(customUI.keyEditor, "Paste clipboard", UDim2.new(1 / 3, -12, 0, 26), UDim2.new(0, 6, 1, -40))
+customUI.keySave = makeGlassButton(customUI.keyEditor, "Use keyframes", UDim2.new(1 / 3, -12, 0, 26), UDim2.new(1 / 3, 1, 1, -40))
+customUI.keyCancel = makeGlassButton(customUI.keyEditor, "Cancel", UDim2.new(1 / 3, -12, 0, 26), UDim2.new(2 / 3, -4, 1, -40))
+
+customUI.keyButton.MouseButton1Click:Connect(function()
+	if customUI.pending and #customUI.pending > 100000 then
+		customUI.keyBox.Text = ""
+		customUI.keyEditorHint.Text = string.format(
+			"Loaded keyframes (%.1f KB). Press Use keyframes to keep them, or paste new text.",
+			#customUI.pending / 1024
+		)
+		customUI.keyEditorHint.TextColor3 = MUTED
+	else
+		customUI.keyBox.Text = customUI.pending or ""
+		customUI.keyEditorHint.Text = customUI.keyDefaultHint
+		customUI.keyEditorHint.TextColor3 = MUTED
+	end
+	customUI.keyEditor.Visible = true
+	customUI.keyBox:CaptureFocus()
+end)
+
+customUI.keySave.MouseButton1Click:Connect(function()
+	local text = customUI.keyBox.Text
+	if text:match("^%s*$") then
+		if customUI.pending and customUI.pending ~= "" then
+			customUI.keyEditor.Visible = false
+			setStatus("Keeping loaded keyframes - press Add emote", GREEN)
+			return
+		end
+		customUI.keyEditorHint.Text = "Paste keyframes first."
+		customUI.keyEditorHint.TextColor3 = Color3.fromRGB(255, 120, 120)
+		return
+	end
+	if not (text:match("{Time%s*=") or text:match("^%s*return") or text:match("CFrame%.new")) then
+		customUI.keyEditorHint.Text = "That doesn't look like keyframe data."
+		customUI.keyEditorHint.TextColor3 = Color3.fromRGB(255, 120, 120)
+		return
+	end
+	customUI.pending = text
+	customUI.updateKeyButton()
+	customUI.keyEditor.Visible = false
+	setStatus("Keyframes loaded - press Add emote", GREEN)
+end)
+
+customUI.keyCancel.MouseButton1Click:Connect(function()
+	customUI.keyEditor.Visible = false
+end)
+
+customUI.pasteClipboard = function()
+	local genv = (getgenv and getgenv()) or _G
+	local fns = {}
+	if type(genv.getclipboard) == "function" then fns[#fns + 1] = genv.getclipboard end
+	if type(genv.get_clipboard) == "function" then fns[#fns + 1] = genv.get_clipboard end
+	if type(genv.GetClipboard) == "function" then fns[#fns + 1] = genv.GetClipboard end
+	if type(genv.syn) == "table" and type(genv.syn.getclipboard) == "function" then
+		fns[#fns + 1] = genv.syn.getclipboard
+	end
+	for _, fn in ipairs(fns) do
+		local ok, text = pcall(fn)
+		if ok and type(text) == "string" and text ~= "" then
+			if not (text:match("{Time%s*=") or text:match("^%s*return") or text:match("CFrame%.new")) then
+				customUI.keyEditorHint.Text = "Clipboard doesn't look like keyframe data."
+				customUI.keyEditorHint.TextColor3 = Color3.fromRGB(255, 120, 120)
+				return
+			end
+			customUI.pending = text
+			customUI.updateKeyButton()
+			customUI.keyEditor.Visible = false
+			setStatus(string.format("Keyframes loaded from clipboard (%.1f KB)", #text / 1024), GREEN)
+			return
+		end
+	end
+	customUI.keyEditorHint.Text = "No clipboard access - paste into the box instead."
+	customUI.keyEditorHint.TextColor3 = Color3.fromRGB(255, 120, 120)
+end
+
+customUI.keyPaste.MouseButton1Click:Connect(customUI.pasteClipboard)
+
+customUI.pickFile = function()
+	local genv = (getgenv and getgenv()) or _G
+	local names = {
+		"OpenFileDialog", "openFileDialog", "openfiledialog",
+		"OpenFilePicker", "promptfile", "PromptFile", "promptFile",
+	}
+	for _, name in ipairs(names) do
+		local fn = genv[name]
+		if type(fn) == "function" then
+			local ok, result = pcall(fn)
+			if not ok then
+				ok, result = pcall(fn, "")
+			end
+			if not ok then
+				ok, result = pcall(fn, { Filter = "*.lua" })
+			end
+			if ok and type(result) == "string" and result ~= "" then
+				return result
+			end
+		end
+	end
+	local syn = genv.syn
+	if type(syn) == "table" then
+		for _, name in ipairs({ "openfile", "promptfile", "open_file" }) do
+			local fn = syn[name]
+			if type(fn) == "function" then
+				local ok, result = pcall(fn)
+				if ok and type(result) == "string" and result ~= "" then
+					return result
+				end
+			end
+		end
+	end
+	return nil
+end
+
+customUI.browseButton.MouseButton1Click:Connect(function()
+	local path = customUI.pickFile()
+	if path then
+		customUI.fileBox.Text = path
+		setStatus("Selected " .. (path:match("([^/\\]+)$") or path), GREEN)
+	else
+		setStatus("No file picker - paste the path, or drop it in " .. FOLDER_PATH, WHITE)
+	end
+end)
+
+customUI.updateKeyButton()
+customUI.setMode("link")
 
 local speedPanel = Instance.new("Frame")
 speedPanel.Name = "SpeedPanel"
@@ -974,7 +1331,6 @@ end
 
 task.spawn(getLogoAsset)
 
--- delete (bin) icon: embedded in the script, written to disk once, no HTTP needed
 local bin = { pending = nil, asset = nil }
 __i = function()
 	local BIN_FILE = FOLDER_ROOT .. "/bin.png"
@@ -1163,21 +1519,35 @@ __i = function()
 		makeKeyButton(parent, bindId, 8, y)
 	end
 
-	local rightCard = makeFeatureCard(limbPanel, 0, 100)
+	local rightCard = makeFeatureCard(limbPanel, 0, 160)
 	limbToggle = makeGlassButton(rightCard, "Right arm stretch: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
-	makeCardDesc(rightCard, "Stretches your right arm toward the cursor. Enable reanimation first.", 38)
-	makeCardBindRow(rightCard, "Keybind", "__limb_toggle", 70)
+	makeCardDesc(rightCard, "Stretches your right arm toward the cursor or an attached player. Enable reanimation first.", 38)
+	makeCardBindRow(rightCard, "Keybind", "__limb_toggle", 72)
+	local rightTarget = makeGlassButton(rightCard, "Target: Cursor", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 100))
+	rightTarget.TextSize = 11
+	rightTarget.TextTruncate = Enum.TextTruncate.AtEnd
+	local rightClick = makeGlassButton(rightCard, "Click attach: Off", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 128))
+	rightClick.TextSize = 11
+	st.stretchUI.RightArm.target = rightTarget
+	st.stretchUI.RightArm.click = rightClick
 
-	local scrollCard = makeFeatureCard(limbPanel, 108, 88)
+	local leftCard = makeFeatureCard(limbPanel, 168, 160)
+	limbLeftToggle = makeGlassButton(leftCard, "Left arm stretch: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
+	makeCardDesc(leftCard, "Stretches your left arm toward the cursor or an attached player. Enable reanimation first.", 38)
+	makeCardBindRow(leftCard, "Keybind", "__limb_left_toggle", 72)
+	local leftTarget = makeGlassButton(leftCard, "Target: Cursor", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 100))
+	leftTarget.TextSize = 11
+	leftTarget.TextTruncate = Enum.TextTruncate.AtEnd
+	local leftClick = makeGlassButton(leftCard, "Click attach: Off", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 128))
+	leftClick.TextSize = 11
+	st.stretchUI.LeftArm.target = leftTarget
+	st.stretchUI.LeftArm.click = leftClick
+
+	local scrollCard = makeFeatureCard(limbPanel, 336, 88)
 	scrollToggle = makeGlassButton(scrollCard, "Scroll stretch: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
 	makeCardDesc(scrollCard, "Use the mouse wheel to control how far the right arm reaches while stretched. Enable reanimation first.", 38)
 
-	local leftCard = makeFeatureCard(limbPanel, 204, 100)
-	limbLeftToggle = makeGlassButton(leftCard, "Left arm stretch: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
-	makeCardDesc(leftCard, "Stretches your left arm toward the cursor. Enable reanimation first.", 38)
-	makeCardBindRow(leftCard, "Keybind", "__limb_left_toggle", 70)
-
-	local torsoCard = makeFeatureCard(limbPanel, 312, 130)
+	local torsoCard = makeFeatureCard(limbPanel, 432, 130)
 	torsoToggle = makeGlassButton(torsoCard, "Torso follow: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
 	makeCardDesc(torsoCard, "Turns your upper torso toward the camera. Enable reanimation first.", 38)
 	makeCardBindRow(torsoCard, "Keybind", "__torso_toggle", 70)
@@ -1204,19 +1574,141 @@ __i = function()
 		turnButtons[opt.deg] = btn
 	end
 
-	local headCard = makeFeatureCard(limbPanel, 450, 100)
+	local headCard = makeFeatureCard(limbPanel, 570, 100)
 	headToggle = makeGlassButton(headCard, "Head follow: Off", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
 	makeCardDesc(headCard, "Turns your head toward the camera. Enable reanimation first.", 38)
 	makeCardBindRow(headCard, "Keybind", "__head_toggle", 70)
 
-	limbPanel.CanvasSize = UDim2.new(0, 0, 0, 560)
+	local poleCard = makeFeatureCard(limbPanel, 678, 268)
+
+	local poleTitle = Instance.new("TextLabel")
+	poleTitle.Size = UDim2.new(1, -158, 0, 20)
+	poleTitle.Position = UDim2.new(0, 8, 0, 8)
+	poleTitle.BackgroundTransparency = 1
+	poleTitle.Text = "Pole"
+	poleTitle.TextColor3 = WHITE
+	poleTitle.Font = Enum.Font.GothamMedium
+	poleTitle.TextSize = 13
+	poleTitle.TextXAlignment = Enum.TextXAlignment.Left
+	poleTitle.ZIndex = 4
+	poleTitle.Parent = poleCard
+
+	st.restorePolesButton = makeGlassButton(
+		poleCard,
+		"Restore",
+		UDim2.new(0, 64, 0, 22),
+		UDim2.new(1, -150, 0, 6)
+	)
+	st.restorePolesButton.TextSize = 11
+
+	st.releasePolesButton = makeGlassButton(
+		poleCard,
+		"Release all",
+		UDim2.new(0, 80, 0, 22),
+		UDim2.new(1, -82, 0, 6)
+	)
+	st.releasePolesButton.TextSize = 11
+
+	local poleDefs = {
+		{ key = "LeftArm", label = "Left arm", left = true },
+		{ key = "RightArm", label = "Right arm", left = false },
+		{ key = "LeftLeg", label = "Left leg", left = true },
+		{ key = "RightLeg", label = "Right leg", left = false },
+	}
+
+	local function setPoleSize(key, value)
+		value = math.clamp(math.floor((tonumber(value) or st.poleDefaultSize) + 0.5), 4, 40)
+		st.poleSize[key] = value
+		local label = st.poleSizeLabels[key]
+		if label then
+			label.Text = tostring(value)
+		end
+		local pole = st.poles[key]
+		if pole and pole.setSize then
+			pcall(pole.setSize, value)
+		end
+	end
+
+	for i, def in ipairs(poleDefs) do
+		local row = i <= 2 and 0 or 1
+		local x = def.left and 0 or 0.5
+		local offsetX = def.left and 8 or 4
+		local btn = makeGlassButton(
+			poleCard,
+			def.label .. ": Off",
+			UDim2.new(0.5, -12, 0, 24),
+			UDim2.new(x, offsetX, 0, 68 + row * 32)
+		)
+		btn.TextSize = 11
+		st.poleButtons[def.key] = btn
+	end
+
+	makeCardDesc(
+		poleCard,
+		"Moves that limb onto a pole on the floor. Drag the + icon anywhere to move it, or press Restore.",
+		32
+	)
+
+	local sizeHeader = Instance.new("TextLabel")
+	sizeHeader.Size = UDim2.new(1, -16, 0, 16)
+	sizeHeader.Position = UDim2.new(0, 8, 0, 132)
+	sizeHeader.BackgroundTransparency = 1
+	sizeHeader.Text = "Pole size (studs)"
+	sizeHeader.TextColor3 = MUTED
+	sizeHeader.Font = Enum.Font.GothamMedium
+	sizeHeader.TextSize = 11
+	sizeHeader.TextXAlignment = Enum.TextXAlignment.Left
+	sizeHeader.ZIndex = 4
+	sizeHeader.Parent = poleCard
+
+	for i, def in ipairs(poleDefs) do
+		local y = 152 + (i - 1) * 28
+
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, -110, 0, 22)
+		label.Position = UDim2.new(0, 8, 0, y)
+		label.BackgroundTransparency = 1
+		label.Text = def.label
+		label.TextColor3 = MUTED
+		label.Font = Enum.Font.Gotham
+		label.TextSize = 11
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.ZIndex = 4
+		label.Parent = poleCard
+
+		local minus = makeGlassButton(poleCard, "-", UDim2.new(0, 26, 0, 22), UDim2.new(1, -96, 0, y))
+		minus.TextSize = 13
+
+		local valueLabel = Instance.new("TextLabel")
+		valueLabel.Size = UDim2.new(0, 32, 0, 22)
+		valueLabel.Position = UDim2.new(1, -68, 0, y)
+		valueLabel.BackgroundTransparency = 1
+		valueLabel.Text = tostring(st.poleDefaultSize)
+		valueLabel.TextColor3 = WHITE
+		valueLabel.Font = Enum.Font.GothamMedium
+		valueLabel.TextSize = 12
+		valueLabel.TextXAlignment = Enum.TextXAlignment.Center
+		valueLabel.ZIndex = 4
+		valueLabel.Parent = poleCard
+
+		local plus = makeGlassButton(poleCard, "+", UDim2.new(0, 26, 0, 22), UDim2.new(1, -34, 0, y))
+		plus.TextSize = 13
+
+		st.poleSize[def.key] = st.poleDefaultSize
+		st.poleSizeLabels[def.key] = valueLabel
+
+		minus.MouseButton1Click:Connect(function()
+			setPoleSize(def.key, (st.poleSize[def.key] or st.poleDefaultSize) - 1)
+		end)
+		plus.MouseButton1Click:Connect(function()
+			setPoleSize(def.key, (st.poleSize[def.key] or st.poleDefaultSize) + 1)
+		end)
+	end
+
+	limbPanel.CanvasSize = UDim2.new(0, 0, 0, 960)
 end
 __i()
 
-
--- ===================== STATE PANEL (Idle / Run) =====================
--- Card layout matching the Limb page. Collapsible Idle/Run dropdowns.
--- Wrapped so locals stay under the 200-register limit.
 st.panel, st.refreshLists = (function()
 	local CARD_BG = Color3.fromRGB(18, 18, 18)
 	local COLLAPSED_H = 70
@@ -1266,7 +1758,6 @@ st.panel, st.refreshLists = (function()
 		desc.Parent = parent
 	end
 
-	-- Enable card
 	local enableCard = makeFeatureCard(panel, 0, 88)
 	local enableBtn = makeGlassButton(enableCard, "State animations: On", UDim2.new(1, -16, 0, 26), UDim2.new(0, 8, 0, 8))
 	makeCardDesc(enableCard, "Auto-plays idle when standing still and run when moving. Enable reanimation first.", 38)
@@ -1311,7 +1802,6 @@ st.panel, st.refreshLists = (function()
 		local card = makeFeatureCard(panel, 0, COLLAPSED_H)
 		local expanded = false
 
-		-- Header row (always visible) — click to toggle dropdown
 		local headerBtn = Instance.new("TextButton")
 		headerBtn.Size = UDim2.new(1, -66, 0, 54)
 		headerBtn.Position = UDim2.new(0, 0, 0, 0)
@@ -1362,7 +1852,6 @@ st.panel, st.refreshLists = (function()
 		local clearBtn = makeGlassButton(card, "Clear", UDim2.new(0, 50, 0, 22), UDim2.new(1, -58, 0, 8))
 		clearBtn.TextSize = 11
 
-		-- Dropdown body (hidden when collapsed)
 		local dropBody = Instance.new("Frame")
 		dropBody.Size = UDim2.new(1, -16, 0, EXPANDED_H - COLLAPSED_H - 4)
 		dropBody.Position = UDim2.new(0, 8, 0, COLLAPSED_H - 4)
@@ -1412,7 +1901,6 @@ st.panel, st.refreshLists = (function()
 			chevron.Rotation = value and 90 or 0
 			chevron.TextColor3 = value and WHITE or MUTED
 			if value then
-				-- collapse other sections
 				for _, other in ipairs(sections) do
 					if other ~= sec and other.expanded then
 						other.setExpanded(false)
@@ -1618,9 +2106,6 @@ st.panel, st.refreshLists = (function()
 	return panel, refresh
 end)()
 
--- ===================== ANIMCOPY PANEL =====================
--- Pick a player, hit Copy: you snap beside them and mirror every joint
--- (Motor6D) of their character each frame, so ALL their animations are copied.
 st.copyPanel, st.copyStop = (function()
 	local RS_NAME = "animcopy_mirror"
 
@@ -1654,7 +2139,6 @@ st.copyPanel, st.copyStop = (function()
     local tparts = {}
     local modeCheck = 0
 
-	-- UI -----------------------------------------------------------------
 	local targetBtn = makeGlassButton(panel, "Select player...", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 0))
 	local copyBtn = makeGlassButton(panel, "Copy", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 34))
 
@@ -1718,7 +2202,6 @@ st.copyPanel, st.copyStop = (function()
 		infoLabel.TextColor3 = color or MUTED
 	end
 
-	-- Dropdown -----------------------------------------------------------
 	local dd = Instance.new("Frame")
 	dd.Size = UDim2.new(1, 0, 0, 160)
 	dd.Position = UDim2.new(0, 0, 0, 30)
@@ -1943,12 +2426,11 @@ end
 		end
 	end
 
-	-- Dropdown logic -----------------------------------------------------
 	local function selectTarget(plr)
 		target = plr
 		targetBtn.Text = "Target: " .. plr.DisplayName
 		dd.Visible = false
-		cachedT = nil -- force rebuild if we're mid-copy (switches live)
+		cachedT = nil
 		if copying then
 			info("Copying " .. plr.DisplayName .. " (" .. side .. ")", GREEN)
 			setStatus("Copying " .. plr.DisplayName, GREEN)
@@ -2033,7 +2515,6 @@ end
 		end)
 	end))
 
-	-- Buttons ------------------------------------------------------------
 	copyBtn.MouseButton1Click:Connect(function()
 		dd.Visible = false
 		if copying then stopCopy() else startCopy() end
@@ -2076,7 +2557,7 @@ end
 modeBtn.MouseButton1Click:Connect(function()
 	modeSetting = (modeSetting == "Auto") and "Parts" or (modeSetting == "Parts") and "Joints" or "Auto"
 	modeBtn.Text = "Mode: " .. modeSetting
-	cachedT = nil -- force rebuild with the new mode
+	cachedT = nil
 end)
 
 	return panel, stopCopy
@@ -2103,6 +2584,78 @@ local function buildArmStretch(opts)
 	local _peopleParts = {}
 	local _peopleTime = 0
 	local _CAST_INTERVAL = 0
+
+	local targetPlayer
+	local clickAttach = false
+	local picker
+	local setTarget
+
+	local function refreshTargetVisual()
+		if not opts.targetButton then return end
+		if targetPlayer then
+			opts.targetButton.Text = "Target: " .. (targetPlayer.DisplayName or targetPlayer.Name)
+			opts.targetButton.TextColor3 = ORANGE
+		else
+			opts.targetButton.Text = "Target: Cursor"
+			opts.targetButton.TextColor3 = WHITE
+		end
+	end
+
+	setTarget = function(plr)
+		if plr and plr.Parent ~= Players then plr = nil end
+		targetPlayer = plr
+		refreshTargetVisual()
+		if picker then picker.close() end
+		if plr then
+			setStatus(opts.statusName .. " target: " .. (plr.DisplayName or plr.Name), MUTED)
+		else
+			setStatus(opts.statusName .. " target: cursor", MUTED)
+		end
+	end
+
+	local function playerFromHit(inst)
+		local node = inst
+		while node and node ~= Workspace do
+			if node:IsA("Model") then
+				local plr = Players:GetPlayerFromCharacter(node)
+				if plr then return plr end
+			end
+			node = node.Parent
+		end
+		return nil
+	end
+
+	local function ignoredCharacters()
+		local ignore = {}
+		if player.Character then table.insert(ignore, player.Character) end
+		if api and api.get_real_character then
+			local ok, real = pcall(api.get_real_character)
+			if ok and real and real.Parent then table.insert(ignore, real) end
+		end
+		return ignore
+	end
+
+	local function playerAtScreenPoint(screenPos)
+		local cam = Workspace.CurrentCamera
+		if not (cam and screenPos) then return nil end
+		local ray = cam:ViewportPointToRay(screenPos.X, screenPos.Y)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local ignore = ignoredCharacters()
+		local hit
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = ignore
+			local ok, h = pcall(Workspace.Raycast, Workspace, ray.Origin, ray.Direction * 5000, params)
+			if not (ok and h) then break end
+			if h.Instance.Transparency >= 0.95 then
+				table.insert(ignore, h.Instance)
+			else
+				hit = h
+				break
+			end
+		end
+		return hit and playerFromHit(hit.Instance) or nil
+	end
 
 	local function restore()
 		_cachedReach = nil
@@ -2169,27 +2722,52 @@ local function buildArmStretch(opts)
 			return
 		end
 
-		local cam = Workspace.CurrentCamera
-		local mouse = UserInputService:GetMouseLocation()
-		local ray = cam:ViewportPointToRay(mouse.X, mouse.Y)
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.FilterDescendantsInstances = { char }
+		local target
+		local hasHit = false
 
-		local ignore = { char }
-		local hit
-		for _ = 1, 8 do
-			params.FilterDescendantsInstances = ignore
-			local okCast, h = pcall(Workspace.Raycast, Workspace, ray.Origin, ray.Direction * 5000, params)
-			if not (okCast and h) then break end
-			if h.Instance.Transparency >= 0.95 then
-				table.insert(ignore, h.Instance)
+		if targetPlayer then
+			if not targetPlayer.Parent then
+				setTarget(nil)
 			else
-				hit = h
-				break
+				local tchar = targetPlayer.Character
+				if tchar and tchar.Parent then
+					local tpart = tchar:FindFirstChild("HumanoidRootPart")
+						or tchar:FindFirstChild("UpperTorso")
+						or tchar:FindFirstChild("Torso")
+						or tchar:FindFirstChild("Head")
+					if tpart then
+						target = tpart.Position
+						hasHit = true
+					end
+				end
 			end
 		end
-		local target = hit and hit.Position or (ray.Origin + ray.Direction * 5000)
+
+		if not target then
+			local cam = Workspace.CurrentCamera
+			if not cam then return end
+			local mouse = UserInputService:GetMouseLocation()
+			local ray = cam:ViewportPointToRay(mouse.X, mouse.Y)
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = { char }
+
+			local ignore = { char }
+			local hit
+			for _ = 1, 8 do
+				params.FilterDescendantsInstances = ignore
+				local okCast, h = pcall(Workspace.Raycast, Workspace, ray.Origin, ray.Direction * 5000, params)
+				if not (okCast and h) then break end
+				if h.Instance.Transparency >= 0.95 then
+					table.insert(ignore, h.Instance)
+				else
+					hit = h
+					break
+				end
+			end
+			target = hit and hit.Position or (ray.Origin + ray.Direction * 5000)
+			hasHit = hit ~= nil
+		end
 
 		local start = c.torso.CFrame:PointToWorldSpace(c.motors[1].c0.Position)
 		local offset = target - start
@@ -2198,7 +2776,7 @@ local function buildArmStretch(opts)
 		local upperLen = c.upperSize.Y
 		local handFull = c.handSize.Y * 3
 
-		local maxReach = hit and (offset.Magnitude + LIMB_SINK) or LIMB_LENGTH
+		local maxReach = hasHit and (offset.Magnitude + LIMB_SINK) or LIMB_LENGTH
 		if scrollMode then
 
 			maxReach = math.min(shownScroll, maxReach)
@@ -2207,7 +2785,7 @@ local function buildArmStretch(opts)
 		local avail = math.max(maxReach - upperLen, 0.1)
 		local handLen = math.min(handFull, avail)
 
-		local middle = math.max(avail - handLen / 2 + (hit and handLen / 2 or 0), 0.05)
+		local middle = math.max(avail - handLen / 2 + (hasHit and handLen / 2 or 0), 0.05)
 		local lowerLen = math.min(middle, PART_MAX)
 		local gap = middle - lowerLen
 
@@ -2307,6 +2885,230 @@ local function buildArmStretch(opts)
 		}
 	end
 
+	if opts.targetButton then
+		local origin = Instance.new("Frame")
+		origin.Name = "TargetOrigin"
+		origin.Size = UDim2.fromOffset(0, 0)
+		origin.BackgroundTransparency = 1
+		origin.BorderSizePixel = 0
+		origin.ZIndex = 0
+		origin.Parent = screenGui
+
+		local overlay = Instance.new("Frame")
+		overlay.Name = "TargetPicker"
+		overlay.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+		overlay.BorderSizePixel = 0
+		overlay.Active = true
+		overlay.Visible = false
+		overlay.ZIndex = 1000
+		overlay.Parent = screenGui
+		makeCorner(overlay, 8)
+
+		local outline = Instance.new("UIStroke")
+		outline.Color = Color3.fromRGB(60, 60, 60)
+		outline.Thickness = 1
+		outline.Parent = overlay
+
+		local search = Instance.new("TextBox")
+		search.Size = UDim2.new(1, -12, 0, 24)
+		search.Position = UDim2.new(0, 6, 0, 6)
+		search.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+		search.BorderSizePixel = 0
+		search.Text = ""
+		search.PlaceholderText = "Search players..."
+		search.PlaceholderColor3 = MUTED
+		search.TextColor3 = WHITE
+		search.Font = Enum.Font.Gotham
+		search.TextSize = 11
+		search.TextXAlignment = Enum.TextXAlignment.Left
+		search.ClearTextOnFocus = false
+		search.ZIndex = 1001
+		search.Parent = overlay
+		makeCorner(search, 5)
+
+		local searchPad = Instance.new("UIPadding")
+		searchPad.PaddingLeft = UDim.new(0, 8)
+		searchPad.PaddingRight = UDim.new(0, 8)
+		searchPad.Parent = search
+
+		local list = Instance.new("ScrollingFrame")
+		list.Size = UDim2.new(1, -12, 1, -40)
+		list.Position = UDim2.new(0, 6, 0, 34)
+		list.BackgroundTransparency = 1
+		list.BorderSizePixel = 0
+		list.ScrollBarThickness = 4
+		list.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+		list.CanvasSize = UDim2.new(0, 0, 0, 0)
+		list.ZIndex = 1001
+		list.Parent = overlay
+
+		local layout = Instance.new("UIListLayout")
+		layout.Padding = UDim.new(0, 3)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = list
+
+		local catcher = Instance.new("TextButton")
+		catcher.Name = "TargetCatcher"
+		catcher.BackgroundTransparency = 1
+		catcher.Text = ""
+		catcher.AutoButtonColor = false
+		catcher.Visible = false
+		catcher.ZIndex = 999
+		catcher.Parent = screenGui
+
+		local open = false
+
+		local function close()
+			open = false
+			overlay.Visible = false
+			catcher.Visible = false
+		end
+
+		local function addRow(text, plr, active)
+			local row = Instance.new("TextButton")
+			row.Size = UDim2.new(1, -6, 0, 24)
+			row.BackgroundColor3 = active and Color3.fromRGB(42, 42, 42) or Color3.fromRGB(26, 26, 26)
+			row.BorderSizePixel = 0
+			row.Text = text
+			row.TextColor3 = active and ORANGE or WHITE
+			row.Font = Enum.Font.Gotham
+			row.TextSize = 11
+			row.TextXAlignment = Enum.TextXAlignment.Left
+			row.TextTruncate = Enum.TextTruncate.AtEnd
+			row.AutoButtonColor = false
+			row.ZIndex = 1002
+			row.LayoutOrder = #list:GetChildren()
+			row.Parent = list
+			makeCorner(row, 5)
+
+			local pad = Instance.new("UIPadding")
+			pad.PaddingLeft = UDim.new(0, 8)
+			pad.PaddingRight = UDim.new(0, 8)
+			pad.Parent = row
+
+			row.MouseButton1Click:Connect(function()
+				setTarget(plr)
+			end)
+		end
+
+		local function refresh()
+			for _, child in ipairs(list:GetChildren()) do
+				if child:IsA("TextButton") then child:Destroy() end
+			end
+			addRow("Cursor (no target)", nil, targetPlayer == nil)
+
+			local query = string.lower(search.Text)
+			local entries = {}
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= player then
+					local name = plr.DisplayName or plr.Name
+					local label = name .. " (@" .. plr.Name .. ")"
+					if query == "" or string.find(string.lower(label), query, 1, true) then
+						table.insert(entries, { plr = plr, label = label })
+					end
+				end
+			end
+			table.sort(entries, function(a, b)
+				return string.lower(a.label) < string.lower(b.label)
+			end)
+			for _, entry in ipairs(entries) do
+				addRow(entry.label, entry.plr, targetPlayer == entry.plr)
+			end
+			list.CanvasSize = UDim2.new(0, 0, 0, (#entries + 1) * 27)
+		end
+
+		local function reposition()
+			local cam = Workspace.CurrentCamera
+			if not cam then return end
+			local vp = cam.ViewportSize
+			local btn = opts.targetButton
+			local originPos = origin.AbsolutePosition
+			local bp = btn.AbsolutePosition
+			local bs = btn.AbsoluteSize
+			local w = math.max(bs.X, 220)
+			local h = 200
+			local x = bp.X - originPos.X
+			local y = bp.Y - originPos.Y + bs.Y + 4
+			local minX = 4 - originPos.X
+			local maxX = vp.X - originPos.X - w - 4
+			local minY = 4 - originPos.Y
+			local maxY = vp.Y - originPos.Y - h - 4
+			x = math.clamp(x, minX, math.max(minX, maxX))
+			if y > maxY then
+				y = bp.Y - originPos.Y - h - 4
+			end
+			y = math.clamp(y, minY, math.max(minY, maxY))
+			overlay.Position = UDim2.fromOffset(x, y)
+			overlay.Size = UDim2.fromOffset(w, h)
+
+			catcher.Position = UDim2.fromOffset(-originPos.X, -originPos.Y)
+			catcher.Size = UDim2.fromOffset(vp.X, vp.Y)
+		end
+
+		local function toggle()
+			if open then
+				close()
+				return
+			end
+			reposition()
+			search.Text = ""
+			refresh()
+			open = true
+			overlay.Visible = true
+			catcher.Visible = true
+		end
+
+		opts.targetButton.MouseButton1Click:Connect(toggle)
+		catcher.MouseButton1Click:Connect(close)
+		search:GetPropertyChangedSignal("Text"):Connect(function()
+			if open then refresh() end
+		end)
+		track(Players.PlayerAdded:Connect(function()
+			if open then refresh() end
+		end))
+		track(Players.PlayerRemoving:Connect(function(plr)
+			if plr == targetPlayer then
+				targetPlayer = nil
+				refreshTargetVisual()
+			end
+			if open then refresh() end
+		end))
+
+		picker = {
+			close = close,
+			isOpen = function() return open end,
+		}
+	end
+
+	if opts.clickButton then
+		local function refreshClickVisual()
+			opts.clickButton.Text = "Click attach: " .. (clickAttach and "On" or "Off")
+			opts.clickButton.TextColor3 = clickAttach and ORANGE or WHITE
+		end
+		refreshClickVisual()
+		opts.clickButton.MouseButton1Click:Connect(function()
+			clickAttach = not clickAttach
+			refreshClickVisual()
+			setStatus("Click attach " .. (clickAttach and "on: click a player" or "off"), MUTED)
+		end)
+		track(UserInputService.InputBegan:Connect(function(input, processed)
+			if not clickAttach or not enabled or processed then return end
+			if picker and picker.isOpen() then return end
+			local kind = input.UserInputType
+			if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch then return end
+			local pos
+			if kind == Enum.UserInputType.Touch then
+				pos = Vector2.new(input.Position.X, input.Position.Y)
+			else
+				pos = UserInputService:GetMouseLocation()
+			end
+			local plr = playerAtScreenPoint(pos)
+			if plr and plr ~= player then
+				setTarget(plr)
+			end
+		end))
+	end
+
 	function self.set(value)
 		if value == enabled then return end
 		if value and not reanimEnabled then
@@ -2326,6 +3128,7 @@ local function buildArmStretch(opts)
 	function self.kill()
 		enabled = false
 		blend = 0
+		if picker then picker.close() end
 		stopConns()
 		restore()
 		updateScrollBind()
@@ -2356,6 +3159,8 @@ local limb = buildArmStretch({
 	upper = "RightUpperArm", lower = "RightLowerArm", hand = "RightHand",
 	shoulder = "RightShoulder", elbow = "RightElbow", wrist = "RightWrist",
 	toggleButton = limbToggle, scrollButton = scrollToggle, action = "limbScroll",
+	targetButton = st.stretchUI.RightArm.target,
+	clickButton = st.stretchUI.RightArm.click,
 })
 local limbLeft = buildArmStretch({
 	label = "Left arm stretch",
@@ -2363,12 +3168,757 @@ local limbLeft = buildArmStretch({
 	upper = "LeftUpperArm", lower = "LeftLowerArm", hand = "LeftHand",
 	shoulder = "LeftShoulder", elbow = "LeftElbow", wrist = "LeftWrist",
 	toggleButton = limbLeftToggle, action = "limbScrollLeft",
+	targetButton = st.stretchUI.LeftArm.target,
+	clickButton = st.stretchUI.LeftArm.click,
 })
-limbToggle.MouseButton1Click:Connect(limb.toggle)
+limbToggle.MouseButton1Click:Connect(function()
+	if st.poles.RightArm then pcall(st.poles.RightArm.kill) end
+	limb.toggle()
+end)
 scrollToggle.MouseButton1Click:Connect(function()
 	limb.setScroll(not limb.scrollOn())
 end)
-limbLeftToggle.MouseButton1Click:Connect(limbLeft.toggle)
+limbLeftToggle.MouseButton1Click:Connect(function()
+	if st.poles.LeftArm then pcall(st.poles.LeftArm.kill) end
+	limbLeft.toggle()
+end)
+
+__i = function()
+	local LIMB_SINK = 0
+	local PART_MAX = 2048
+	local POLE_FORWARD = 3
+	local MIN_POLE_HEIGHT = 4
+	local MAX_POLE_HEIGHT = 40
+	local activePoleDrag = nil
+
+	local function getRealChar()
+		if api and api.get_real_character then
+			local ok, real = pcall(api.get_real_character)
+			if ok and real and real.Parent then
+				return real
+			end
+		end
+		return nil
+	end
+
+	local function groundBelow(origin, char)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+
+		local ignore = { char }
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local other = plr.Character
+			if other and other ~= char then
+				table.insert(ignore, other)
+			end
+		end
+		local real = getRealChar()
+		if real and real ~= char then
+			table.insert(ignore, real)
+		end
+		params.FilterDescendantsInstances = ignore
+
+		local start = origin + Vector3.new(0, 2, 0)
+		local hit = Workspace:Raycast(start, Vector3.new(0, -1000, 0), params)
+		if hit then
+			return hit.Position
+		end
+		local root = char:FindFirstChild("HumanoidRootPart")
+		local fallbackY = (root and (root.Position.Y - 3)) or origin.Y
+		return Vector3.new(origin.X, fallbackY, origin.Z)
+	end
+
+	local function getFloorPoint(char, endPart)
+		local root = char:FindFirstChild("HumanoidRootPart")
+		local forward = root and root.CFrame.LookVector or Vector3.new(0, 0, -1)
+		forward = Vector3.new(forward.X, 0, forward.Z)
+		if forward.Magnitude < 0.01 then
+			forward = Vector3.new(0, 0, -1)
+		end
+
+		local origin = endPart.Position + forward.Unit * POLE_FORWARD
+		return groundBelow(origin, char)
+	end
+
+	local function buildLimbPole(key, opts)
+		local self = {}
+		local enabled = false
+		local stepConn
+		local current
+		local blend = 0
+		local lastTick = os.clock()
+		local bindName = "limbPole_" .. key
+		local poleHeight = st.poleSize[key] or st.poleDefaultSize
+
+		local POLE_COLOR = Color3.fromRGB(235, 235, 235)
+		local HANDLE_COLOR = Color3.fromRGB(255, 255, 255)
+		local HANDLE_LIFT = 0.3
+		local visual = { pole = nil, handle = nil, gui = nil }
+		local dragging = false
+		local dragPlaneY, dragOffset = nil, Vector3.new()
+
+		local function makeDragIcon(handle)
+			local billboard = Instance.new("BillboardGui")
+			billboard.Name = "DragIcon"
+			billboard.Adornee = handle
+			billboard.Size = UDim2.new(0, 34, 0, 34)
+			billboard.StudsOffsetWorldSpace = Vector3.new(0, 0, 0)
+			billboard.AlwaysOnTop = true
+			billboard.LightInfluence = 0
+			billboard.MaxDistance = 1e6
+			billboard.ResetOnSpawn = false
+			billboard.Parent = handle
+
+			local ring = Instance.new("Frame")
+			ring.AnchorPoint = Vector2.new(0.5, 0.5)
+			ring.Position = UDim2.new(0.5, 0, 0.5, 0)
+			ring.Size = UDim2.new(1, 0, 1, 0)
+			ring.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+			ring.BackgroundTransparency = 0.35
+			ring.BorderSizePixel = 0
+			ring.Parent = billboard
+			makeCorner(ring, 999)
+
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = HANDLE_COLOR
+			stroke.Thickness = 1.5
+			stroke.Transparency = 0.1
+			stroke.Parent = ring
+
+			local barH = Instance.new("Frame")
+			barH.AnchorPoint = Vector2.new(0.5, 0.5)
+			barH.Position = UDim2.new(0.5, 0, 0.5, 0)
+			barH.Size = UDim2.new(0, 15, 0, 2)
+			barH.BackgroundColor3 = HANDLE_COLOR
+			barH.BorderSizePixel = 0
+			barH.Parent = ring
+			makeCorner(barH, 999)
+
+			local barV = Instance.new("Frame")
+			barV.AnchorPoint = Vector2.new(0.5, 0.5)
+			barV.Position = UDim2.new(0.5, 0, 0.5, 0)
+			barV.Size = UDim2.new(0, 2, 0, 15)
+			barV.BackgroundColor3 = HANDLE_COLOR
+			barV.BorderSizePixel = 0
+			barV.Parent = ring
+			makeCorner(barV, 999)
+
+			return billboard
+		end
+
+		local function ensureVisual()
+			if visual.pole and visual.pole.Parent and visual.handle and visual.handle.Parent then
+				return
+			end
+
+			local pole = Instance.new("Part")
+			pole.Name = "reanim_pole_" .. key
+			pole.Shape = Enum.PartType.Cylinder
+			pole.Size = Vector3.new(poleHeight, 0.24, 0.24)
+			pole.Material = Enum.Material.SmoothPlastic
+			pole.Color = POLE_COLOR
+			pole.Transparency = 1
+			pole.Anchored = true
+			pole.CanCollide = false
+			pole.CanTouch = false
+			pole.CanQuery = false
+			pole.CastShadow = false
+			pole.Parent = Workspace
+
+			local handle = Instance.new("Part")
+			handle.Name = "reanim_pole_handle_" .. key
+			handle.Shape = Enum.PartType.Ball
+			handle.Size = Vector3.new(1.6, 1.6, 1.6)
+			handle.Material = Enum.Material.SmoothPlastic
+			handle.Color = HANDLE_COLOR
+			handle.Transparency = 1
+			handle.Anchored = true
+			handle.CanCollide = false
+			handle.CanTouch = false
+			handle.CanQuery = true
+			handle.CastShadow = false
+			handle.Parent = Workspace
+
+			visual.pole = pole
+			visual.handle = handle
+			visual.gui = makeDragIcon(handle)
+		end
+
+		local function updateVisual(pos)
+			if not (visual.pole and visual.pole.Parent and visual.handle and visual.handle.Parent) then
+				return
+			end
+			visual.pole.Size = Vector3.new(poleHeight, 0.24, 0.24)
+			visual.pole.CFrame = CFrame.new(pos + Vector3.new(0, poleHeight / 2, 0))
+				* CFrame.Angles(0, 0, math.pi / 2)
+			visual.handle.CFrame = CFrame.new(pos + Vector3.new(0, HANDLE_LIFT, 0))
+		end
+
+		local function showVisual(pos)
+			ensureVisual()
+			updateVisual(pos)
+		end
+
+		local function hideVisual()
+			dragging = false
+			if activePoleDrag == self then
+				activePoleDrag = nil
+			end
+			if visual.pole then pcall(function() visual.pole:Destroy() end) end
+			if visual.handle then pcall(function() visual.handle:Destroy() end) end
+			visual.pole, visual.handle, visual.gui = nil, nil, nil
+		end
+
+		local function inputRay(input)
+			local cam = Workspace.CurrentCamera
+			if not cam then return nil end
+			return cam:ViewportPointToRay(input.Position.X, input.Position.Y)
+		end
+
+		local function rayPlanePoint(ray, planeY)
+			if not ray then return nil end
+			local dirY = ray.Direction.Y
+			if math.abs(dirY) < 1e-4 then return nil end
+			local t = (planeY - ray.Origin.Y) / dirY
+			if t <= 0 then return nil end
+			return ray.Origin + ray.Direction * t
+		end
+
+		local ICON_HIT_RADIUS = 26
+		local function nearScreenPoint(cam, worldPos, input, useScreen)
+			local pos
+			if useScreen then
+				pos = cam:WorldToScreenPoint(worldPos)
+			else
+				pos = cam:WorldToViewportPoint(worldPos)
+			end
+			if pos.Z <= 0 then return false end
+			local dx = input.Position.X - pos.X
+			local dy = input.Position.Y - pos.Y
+			return (dx * dx + dy * dy) <= (ICON_HIT_RADIUS * ICON_HIT_RADIUS)
+		end
+
+		local function pointerOnHandle(input)
+			local handle = visual.handle
+			if not (handle and handle.Parent) then return false end
+
+			local cam = Workspace.CurrentCamera
+			if cam then
+				local worldPos = handle.Position
+				if nearScreenPoint(cam, worldPos, input, false)
+					or nearScreenPoint(cam, worldPos, input, true) then
+					return true
+				end
+			end
+
+			local ray = inputRay(input)
+			if not ray then return false end
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Include
+			params.FilterDescendantsInstances = { handle }
+			params.IgnoreWater = true
+			local hit = Workspace:Raycast(ray.Origin, ray.Direction * 1e6, params)
+			return hit ~= nil and hit.Instance == handle
+		end
+
+		local function poleBase()
+			if current then return current.poleBase end
+			return self.basePos
+		end
+
+		local function movePole(pos)
+			self.basePos = pos
+			if current then
+				current.poleBase = pos
+				current.anchor = pos + Vector3.new(0, poleHeight, 0)
+			end
+			updateVisual(pos)
+		end
+
+		track(UserInputService.InputBegan:Connect(function(input)
+			if not enabled or dragging or activePoleDrag then return end
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1
+				and input.UserInputType ~= Enum.UserInputType.Touch then
+				return
+			end
+			if not pointerOnHandle(input) then return end
+			local base = poleBase()
+			if not base then return end
+			local point = rayPlanePoint(inputRay(input), base.Y)
+			if not point then return end
+			dragging = true
+			activePoleDrag = self
+			dragPlaneY = base.Y
+			dragOffset = base - point
+			if visual.handle then
+				visual.handle.Material = Enum.Material.Neon
+			end
+		end))
+
+		track(UserInputService.InputChanged:Connect(function(input)
+			if not dragging then return end
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement
+				and input.UserInputType ~= Enum.UserInputType.Touch then
+				return
+			end
+			local point = rayPlanePoint(inputRay(input), dragPlaneY)
+			if not point then return end
+			movePole(point + dragOffset)
+		end))
+
+		track(UserInputService.InputEnded:Connect(function(input)
+			if not dragging then return end
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1
+				and input.UserInputType ~= Enum.UserInputType.Touch then
+				return
+			end
+			dragging = false
+			if activePoleDrag == self then
+				activePoleDrag = nil
+			end
+			if visual.handle then
+				visual.handle.Material = Enum.Material.SmoothPlastic
+			end
+		end))
+
+		local function restore()
+			if not current then return end
+			local c = current
+			current = nil
+
+			for _, part in ipairs({
+				{ c.upper, c.upperSize },
+				{ c.lower, c.lowerSize },
+				{ c.endPart, c.endSize },
+			}) do
+				pcall(function()
+					part[1].Size = part[2]
+				end)
+			end
+
+			for _, m in ipairs(c.motors) do
+				pcall(function()
+					m.motor.Enabled = true
+					m.motor.C0 = m.c0
+					m.motor.C1 = m.c1
+					m.motor.Transform = CFrame.new()
+				end)
+			end
+
+			for _, pp in ipairs(c.partProps or {}) do
+				pcall(function()
+					pp.part.Massless = pp.massless
+					pp.part.CanCollide = pp.canCollide
+					pp.part.CanTouch = pp.canTouch
+				end)
+			end
+
+			if c.realParts then
+				for _, rp in ipairs(c.realParts) do
+					pcall(function()
+						rp.part.Size = rp.size
+						rp.part.Massless = rp.massless
+						rp.part.CanCollide = rp.canCollide
+						rp.part.CanTouch = rp.canTouch
+					end)
+				end
+			end
+		end
+
+		local function capture(char)
+			local upper = char:FindFirstChild(opts.upper)
+			local lower = char:FindFirstChild(opts.lower)
+			local endPart = char:FindFirstChild(opts.endPart)
+			if not (upper and lower and endPart) then return false end
+
+			local m1 = upper:FindFirstChild(opts.motor1)
+			local m2 = lower:FindFirstChild(opts.motor2)
+			local m3 = endPart:FindFirstChild(opts.motor3)
+			if not (m1 and m2 and m3) then return false end
+
+			local base = m1.Part0
+			if not base then return false end
+
+			local floor = self.basePos or getFloorPoint(char, endPart)
+			local real = getRealChar()
+			local realParts = nil
+			if real and real ~= char then
+				realParts = {}
+				for _, name in ipairs({ opts.upper, opts.lower, opts.endPart }) do
+					local rp = real:FindFirstChild(name)
+					if rp then
+						table.insert(realParts, {
+							part = rp,
+							size = rp.Size,
+							massless = rp.Massless,
+							canCollide = rp.CanCollide,
+							canTouch = rp.CanTouch,
+						})
+					end
+				end
+			end
+
+			current = {
+				char = char,
+				base = base,
+				upper = upper,
+				lower = lower,
+				endPart = endPart,
+				upperSize = upper.Size,
+				lowerSize = lower.Size,
+				endSize = endPart.Size,
+				partProps = {
+					{ part = upper, massless = upper.Massless, canCollide = upper.CanCollide, canTouch = upper.CanTouch },
+					{ part = lower, massless = lower.Massless, canCollide = lower.CanCollide, canTouch = lower.CanTouch },
+					{ part = endPart, massless = endPart.Massless, canCollide = endPart.CanCollide, canTouch = endPart.CanTouch },
+				},
+				anchor = floor + Vector3.new(0, poleHeight, 0),
+				poleBase = floor,
+				realParts = realParts,
+				motors = {
+					{ motor = m1, c0 = m1.C0, c1 = m1.C1 },
+					{ motor = m2, c0 = m2.C0, c1 = m2.C1 },
+					{ motor = m3, c0 = m3.C0, c1 = m3.C1 },
+				},
+			}
+			return true
+		end
+
+		local function step()
+			local now0 = os.clock()
+			local dt = math.min(now0 - lastTick, 0.1)
+			lastTick = now0
+			local ease = 1 - math.exp(-10 * dt)
+			blend = blend + ((enabled and 1 or 0) - blend) * ease
+
+			if not enabled and blend < 0.01 then
+				blend = 0
+				if stepConn then
+					stepConn:Disconnect()
+					stepConn = nil
+				end
+				restore()
+				return
+			end
+
+			local char = player.Character
+			if not char then return end
+			if current and current.char ~= char then
+				restore()
+			end
+			if not current and not capture(char) then return end
+
+			local c = current
+			if not (c.base.Parent and c.upper.Parent and c.lower.Parent and c.endPart.Parent) then
+				restore()
+				return
+			end
+
+			if enabled and not (visual.pole and visual.pole.Parent) then
+				showVisual(c.poleBase)
+			end
+
+			local start = c.poleBase
+			local offset = c.anchor - start
+			if offset.Magnitude < 0.01 then return end
+
+			local dir = offset.Unit
+			local upperLen = c.upperSize.Y
+			local maxReach = offset.Magnitude + LIMB_SINK
+
+			local avail = math.max(maxReach - upperLen, 0.1)
+			local endLen = math.min(c.endSize.Y, math.max(avail - 0.1, 0.1))
+			local middle = math.max(avail - endLen, 0.05)
+			local lowerLen = math.min(middle, PART_MAX)
+			local gap = middle - lowerLen
+
+			lowerLen = c.lowerSize.Y + (lowerLen - c.lowerSize.Y) * blend
+			endLen = c.endSize.Y + (endLen - c.endSize.Y) * blend
+			gap = gap * blend
+
+			for _, part in ipairs({ c.upper, c.lower, c.endPart }) do
+				part.CanCollide = false
+				part.CanTouch = false
+				part.Massless = true
+			end
+
+			c.lower.Size = Vector3.new(c.lowerSize.X, lowerLen, c.lowerSize.Z)
+			c.endPart.Size = Vector3.new(c.endSize.X, endLen, c.endSize.Z)
+
+			if c.realParts then
+				for _, rp in ipairs(c.realParts) do
+					pcall(function()
+						rp.part.Massless = true
+						rp.part.CanCollide = false
+						rp.part.CanTouch = false
+						if rp.part.Name == opts.lower then
+							rp.part.Size = Vector3.new(c.lowerSize.X, lowerLen, c.lowerSize.Z)
+						elseif rp.part.Name == opts.endPart then
+							rp.part.Size = Vector3.new(c.endSize.X, endLen, c.endSize.Z)
+						end
+					end)
+				end
+			end
+
+			local upperPos = start + dir * (upperLen / 2)
+			local upperCF
+			if math.abs(dir.Y) > 0.999 then
+				upperCF = CFrame.new(upperPos) * CFrame.Angles(dir.Y > 0 and math.pi or 0, 0, 0)
+			else
+				upperCF = CFrame.lookAt(upperPos, upperPos + dir) * CFrame.Angles(math.pi / 2, 0, 0)
+			end
+			local topOfUpper = CFrame.new(0, upperLen / 2, 0)
+
+			local m1, m2, m3 = c.motors[1], c.motors[2], c.motors[3]
+
+			m1.motor.C0 = m1.c0:Lerp(c.base.CFrame:ToObjectSpace(upperCF * topOfUpper), blend)
+			m1.motor.C1 = m1.c1:Lerp(topOfUpper, blend)
+			m1.motor.Transform = CFrame.new()
+
+			m2.motor.C0 = m2.c0:Lerp(CFrame.new(0, -upperLen / 2, 0), blend)
+			m2.motor.C1 = m2.c1:Lerp(CFrame.new(0, lowerLen / 2, 0), blend)
+			m2.motor.Transform = CFrame.new()
+
+			m3.motor.C0 = m3.c0:Lerp(CFrame.new(0, -(lowerLen / 2 + gap), 0), blend)
+			m3.motor.C1 = m3.c1:Lerp(CFrame.new(0, endLen / 2, 0), blend)
+			m3.motor.Transform = CFrame.new()
+		end
+
+		local function startConns()
+			if stepConn then return end
+			lastTick = os.clock()
+
+			local conns = {}
+			for _, signal in ipairs({ RunService.Stepped, RunService.Heartbeat }) do
+				table.insert(conns, signal:Connect(function()
+					pcall(step)
+				end))
+			end
+
+			pcall(RunService.UnbindFromRenderStep, RunService, bindName)
+			local priority = 301
+			if Enum.RenderPriority and Enum.RenderPriority.Character then
+				priority = Enum.RenderPriority.Character.Value + 10
+			end
+			RunService:BindToRenderStep(bindName, priority, function()
+				pcall(step)
+			end)
+
+			stepConn = {
+				Disconnect = function()
+					for _, cn in ipairs(conns) do
+						cn:Disconnect()
+					end
+					pcall(RunService.UnbindFromRenderStep, RunService, bindName)
+				end,
+			}
+		end
+
+		local function refreshVisual()
+			local btn = st.poleButtons[key]
+			if btn then
+				btn.Text = opts.label .. ": " .. (enabled and "On" or "Off")
+				btn.TextColor3 = enabled and ORANGE or WHITE
+			end
+		end
+
+		function self.set(value)
+			if value == enabled then return end
+			if value and not reanimEnabled then
+				setStatus("enable reanim first", MUTED)
+				return
+			end
+			enabled = value
+
+			if enabled then
+				startConns()
+				if opts.onEnable then pcall(opts.onEnable) end
+			else
+				hideVisual()
+				if blend < 0.01 then
+					if stepConn then
+						stepConn:Disconnect()
+						stepConn = nil
+					end
+					restore()
+				end
+			end
+
+			refreshVisual()
+			setStatus(opts.label .. " pole " .. (enabled and "on" or "off"), MUTED)
+		end
+
+		function self.toggle()
+			self.set(not enabled)
+		end
+
+		function self.setSize(value)
+			value = tonumber(value) or poleHeight
+			value = math.clamp(math.floor(value + 0.5), MIN_POLE_HEIGHT, MAX_POLE_HEIGHT)
+			poleHeight = value
+			st.poleSize[key] = value
+			local label = st.poleSizeLabels[key]
+			if label then
+				label.Text = tostring(value)
+			end
+			if current then
+				current.anchor = current.poleBase + Vector3.new(0, poleHeight, 0)
+			end
+			local base = current and current.poleBase or self.basePos
+			if base then
+				updateVisual(base)
+			end
+		end
+
+		function self.restorePosition()
+			local char = player.Character
+			if not char then return false end
+
+			local floor
+			local root = char:FindFirstChild("HumanoidRootPart")
+			if root then
+				local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+				if look.Magnitude < 0.01 then
+					look = Vector3.new(0, 0, -1)
+				end
+				look = look.Unit
+				local right = Vector3.new(-look.Z, 0, look.X)
+				local origin = root.Position
+					+ look * (opts.restoreForward or 3)
+					+ right * (opts.restoreLateral or 0)
+				floor = groundBelow(origin, char)
+			else
+				local endPart = char:FindFirstChild(opts.endPart)
+				if not endPart then return false end
+				floor = getFloorPoint(char, endPart)
+			end
+
+			self.basePos = floor
+			if current then
+				current.poleBase = floor
+				current.anchor = floor + Vector3.new(0, poleHeight, 0)
+			end
+			if visual.pole then
+				updateVisual(floor)
+			end
+			return true
+		end
+
+		function self.kill()
+			enabled = false
+			blend = 0
+			if stepConn then
+				stepConn:Disconnect()
+				stepConn = nil
+			end
+			restore()
+			hideVisual()
+			refreshVisual()
+		end
+
+		local btn = st.poleButtons[key]
+		if btn then
+			btn.MouseButton1Click:Connect(function()
+				local ok, err = pcall(self.toggle)
+				if not ok then
+					setStatus(opts.label .. " pole error", RED)
+					warn("[reanimation hub] " .. tostring(err))
+				end
+			end)
+		end
+
+		refreshVisual()
+		st.poles[key] = self
+	end
+
+	buildLimbPole("LeftArm", {
+		label = "Left arm",
+		upper = "LeftUpperArm",
+		lower = "LeftLowerArm",
+		endPart = "LeftHand",
+		motor1 = "LeftShoulder",
+		motor2 = "LeftElbow",
+		motor3 = "LeftWrist",
+		restoreForward = 3.4,
+		restoreLateral = -1.4,
+		onEnable = function()
+			limbLeft.kill()
+		end,
+	})
+
+	buildLimbPole("RightArm", {
+		label = "Right arm",
+		upper = "RightUpperArm",
+		lower = "RightLowerArm",
+		endPart = "RightHand",
+		motor1 = "RightShoulder",
+		motor2 = "RightElbow",
+		motor3 = "RightWrist",
+		restoreForward = 3.4,
+		restoreLateral = 1.4,
+		onEnable = function()
+			limb.kill()
+		end,
+	})
+
+	buildLimbPole("LeftLeg", {
+		label = "Left leg",
+		upper = "LeftUpperLeg",
+		lower = "LeftLowerLeg",
+		endPart = "LeftFoot",
+		motor1 = "LeftHip",
+		motor2 = "LeftKnee",
+		motor3 = "LeftAnkle",
+		restoreForward = 2.2,
+		restoreLateral = -0.8,
+	})
+
+	buildLimbPole("RightLeg", {
+		label = "Right leg",
+		upper = "RightUpperLeg",
+		lower = "RightLowerLeg",
+		endPart = "RightFoot",
+		motor1 = "RightHip",
+		motor2 = "RightKnee",
+		motor3 = "RightAnkle",
+		restoreForward = 2.2,
+		restoreLateral = 0.8,
+	})
+
+	if st.restorePolesButton then
+		st.restorePolesButton.MouseButton1Click:Connect(function()
+			local any = false
+			for _, pole in pairs(st.poles) do
+				local ok, moved = pcall(pole.restorePosition)
+				if ok and moved then
+					any = true
+				end
+			end
+			if any then
+				setStatus("Poles restored to you", MUTED)
+			else
+				setStatus("No character to restore poles to", RED)
+			end
+		end)
+	end
+
+	if st.releasePolesButton then
+		st.releasePolesButton.MouseButton1Click:Connect(function()
+			for _, pole in pairs(st.poles) do
+				pcall(pole.kill)
+			end
+			setStatus("Poles released", MUTED)
+		end)
+	end
+end
+
+do
+	local poleOk, poleErr = pcall(__i)
+	if not poleOk then
+		warn("[reanimation hub] pole setup failed: " .. tostring(poleErr))
+		setStatus("Pole setup failed - check console", RED)
+	end
+end
 
 local follow = {}
 
@@ -2739,6 +4289,9 @@ local function makeRow(entry, y, mode)
 					break
 				end
 			end
+			if st.isKeyframeFile(entry.url) and type(delfile) == "function" then
+				pcall(delfile, entry.url)
+			end
 			favorites[entry.name] = nil
 			binds[entry.name] = nil
 			saveData()
@@ -2768,7 +4321,6 @@ local function makeRow(entry, y, mode)
 		delBtn.MouseButton1Click:Connect(function()
 			local path = entry.path
 			if bin.pending ~= path then
-				-- first click arms it, second click deletes
 				bin.pending = path
 				setStatus("Click the bin again to delete " .. entry.name, MUTED)
 				layoutEmotes()
@@ -2863,7 +4415,7 @@ layoutEmotes = function()
 		if emoteMode == "Favs" then
 			empty.Text = "No favourites yet. Tap the star to pin emotes."
 		elseif emoteMode == "Custom" then
-			empty.Text = "No custom emotes yet. Drop .lua files into workspace/" .. FOLDER_PATH
+			empty.Text = "No custom emotes yet. Add one above with a Link, pasted Keyframes, or a File - or drop .lua files into workspace/" .. FOLDER_PATH
 		elseif emoteMode == "Binds" then
 			empty.Text = "No binds yet. Search for an emote to bind it."
 		else
@@ -2909,7 +4461,6 @@ local function scanFolder()
 	for k, v in pairs(map) do localFiles[k] = v end
 	table.sort(newList, function(a, b) return a.name:lower() < b.name:lower() end)
 
-	-- only rebuild the UI if something actually changed
 	local changed = #newList ~= #folderEmotes
 	if not changed then
 		for i, e in ipairs(newList) do
@@ -2960,7 +4511,7 @@ st.copyPanel.Visible = isCopy
 customForm.Visible = isCustom
 emotesScroll.Visible = not (isSpeed or isLimb or isState or isCopy)
 searchBox.Visible = not (isSpeed or isLimb or isState or isCopy)
-	local top = isCustom and (LIST_Y + CUSTOM_FORM_H) or LIST_Y
+	local top = isCustom and (LIST_Y + customFormH) or LIST_Y
 	emotesScroll.Position = UDim2.new(0, 0, 0, top)
 	emotesScroll.Size = UDim2.new(1, 0, 1, -(top + 6))
 	visibleLimit = PAGE_SIZE
@@ -3018,11 +4569,51 @@ end)
 
 customAddButton.MouseButton1Click:Connect(function()
 	local name = customNameBox.Text:match("^%s*(.-)%s*$")
-	local url = customUrlBox.Text:match("^%s*(.-)%s*$")
-	if name == "" or not url:match("^https?://") then
-		setStatus("Custom emote needs a name and a URL", Color3.fromRGB(255, 255, 255))
+	if name == "" then
+		setStatus("Custom emote needs a name", WHITE)
 		return
 	end
+
+	local url, source
+	if customUI.mode == "link" then
+		url = customUrlBox.Text:match("^%s*(.-)%s*$")
+		if not url:match("^https?://") then
+			setStatus("Paste a valid animation script URL", WHITE)
+			return
+		end
+	elseif customUI.mode == "keyframes" then
+		if not customUI.pending or customUI.pending == "" then
+			setStatus("Open the keyframe editor and paste frames first", WHITE)
+			return
+		end
+		source = customUI.pending
+	else
+		local path = customUI.fileBox.Text:match("^%s*(.-)%s*$")
+		if path == "" then
+			setStatus("Pick or paste a keyframe file path", WHITE)
+			return
+		end
+		if type(readfile) ~= "function" then
+			setStatus("This executor can't read local files", RED)
+			return
+		end
+		local ok, data = pcall(readfile, path)
+		if not ok or type(data) ~= "string" or data == "" then
+			setStatus("Couldn't read that file", RED)
+			return
+		end
+		source = data
+	end
+
+	if source then
+		local path = st.writeKeyframeFile(name, source)
+		if not path then
+			setStatus("Couldn't save keyframes (writefile missing)", RED)
+			return
+		end
+		url = path
+	end
+
 	local existing
 	for _, item in ipairs(customEmotes) do
 		if item.name == name then
@@ -3031,15 +4622,34 @@ customAddButton.MouseButton1Click:Connect(function()
 		end
 	end
 	if existing then
+		if existing.url ~= url and st.isKeyframeFile(existing.url) and type(delfile) == "function" then
+			pcall(delfile, existing.url)
+		end
 		existing.url = url
+		existing.kind = customUI.mode
+		existing.source = source
 	else
-		table.insert(customEmotes, { name = name, url = url, custom = true })
+		table.insert(customEmotes, {
+			name = name,
+			url = url,
+			custom = true,
+			kind = customUI.mode,
+			source = source,
+		})
+	end
+
+	if customUI.mode == "keyframes" then
+		customUI.pending = nil
+		customUI.updateKeyButton()
+		customUI.keyBox.Text = ""
 	end
 	customNameBox.Text = ""
 	customUrlBox.Text = ""
+	customUI.fileBox.Text = ""
 	saveData()
 	refreshStatus()
 	layoutEmotes()
+	setStatus("Added " .. name, GREEN)
 end)
 
 track(UserInputService.InputBegan:Connect(function(input)
@@ -3162,6 +4772,9 @@ end
 track(player.CharacterAdded:Connect(function()
 	stopEmote()
 	if follow then follow.kill() end
+	for _, pole in pairs(st.poles) do
+		pcall(pole.kill)
+	end
     pcall(st.copyStop, "Respawned - copy stopped")
 	task.delay(0.5, function()
 		reanimEnabled = api and api.is_reanimated and api.is_reanimated() or false
@@ -3448,6 +5061,9 @@ env[CLEANUP_KEY] = function()
 	pcall(limb.kill)
 	pcall(limbLeft.kill)
 	pcall(follow.kill)
+	for _, pole in pairs(st.poles) do
+		pcall(pole.kill)
+	end
     pcall(st.copyStop)
 	stopEmote()
 	if api and api.reanimate and api.is_reanimated and api.is_reanimated() then
